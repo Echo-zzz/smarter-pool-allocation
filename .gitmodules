@@ -1,0 +1,3 @@
+[submodule "cdol-pool-alloc-testing"]
+	path = cdol-pool-alloc-testing
+	url = git@github.com:calin-yakimchuk/cdol-pool-alloc-testing.git
