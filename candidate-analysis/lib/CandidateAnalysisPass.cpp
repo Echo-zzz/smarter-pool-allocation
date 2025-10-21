@@ -1,4 +1,4 @@
-#include "canaidate-analysis/CanaidateAnalysisPass.h"
+#include "candidate-analysis/CandidateAnalysisPass.h"
 
 #include "llvm/IR/Module.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -6,14 +6,14 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
-#define DEBUG_TYPE "canaidate-analysis"
+#define DEBUG_TYPE "candidate-analysis"
 
 using namespace llvm;
 
-namespace canaidate {
+namespace candidate {
 
-PreservedAnalyses CanaidateAnalysisPass::run(Module &M, ModuleAnalysisManager &MAM) {
-  LLVM_DEBUG(dbgs() << "[canaidate-analysis] Visiting module: " << M.getName() << '\n');
+PreservedAnalyses CandidateAnalysisPass::run(Module &M, ModuleAnalysisManager &MAM) {
+  LLVM_DEBUG(dbgs() << "[candidate-analysis] Visiting module: " << M.getName() << '\n');
 
   // TODO: Implement loop-affinity analysis here.
   (void)MAM;
@@ -21,14 +21,14 @@ PreservedAnalyses CanaidateAnalysisPass::run(Module &M, ModuleAnalysisManager &M
   return PreservedAnalyses::all();
 }
 
-llvm::PassPluginLibraryInfo getCanaidateAnalysisPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "canaidate-analysis", LLVM_VERSION_STRING,
+llvm::PassPluginLibraryInfo getCandidateAnalysisPluginInfo() {
+  return {LLVM_PLUGIN_API_VERSION, "candidate-analysis", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
-                  if (Name == "canaidate-analysis") {
-                    MPM.addPass(CanaidateAnalysisPass());
+                  if (Name == "candidate-analysis") {
+                    MPM.addPass(CandidateAnalysisPass());
                     return true;
                   }
                   return false;
@@ -36,8 +36,8 @@ llvm::PassPluginLibraryInfo getCanaidateAnalysisPluginInfo() {
           }};
 }
 
-} // namespace canaidate
+} // namespace candidate
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
-  return canaidate::getCanaidateAnalysisPluginInfo();
+  return candidate::getCandidateAnalysisPluginInfo();
 }

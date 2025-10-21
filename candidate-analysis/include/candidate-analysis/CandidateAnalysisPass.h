@@ -8,10 +8,10 @@ class ModuleAnalysisManager;
 struct PassPluginLibraryInfo;
 } // namespace llvm
 
-namespace canaidate {
+namespace candidate {
 
 /// Module-level analysis pass that will compute struct-field affinity data.
-class CanaidateAnalysisPass : public llvm::PassInfoMixin<CanaidateAnalysisPass> {
+class CandidateAnalysisPass : public llvm::PassInfoMixin<CandidateAnalysisPass> {
 public:
   llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM);
 };
@@ -19,6 +19,6 @@ public:
 /// Registration helper exposed so unit tests or custom drivers can attach the
 /// pass to an arbitrary pipeline without relying on implicit static
 /// initialisers.
-llvm::PassPluginLibraryInfo getCanaidateAnalysisPluginInfo();
+llvm::PassPluginLibraryInfo getCandidateAnalysisPluginInfo();
 
-} // namespace canaidate
+} // namespace candidate

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(canaidate-analysis LANGUAGES CXX)
+project(candidate-analysis LANGUAGES CXX)
 
 # Require C++17 for the analysis implementation
 set(CMAKE_CXX_STANDARD 17)
@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Discover LLVM via its CMake package configuration. Users must provide LLVM_DIR.
 find_package(LLVM REQUIRED CONFIG)
 
-message(STATUS "canaidate-analysis: using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
+message(STATUS "candidate-analysis: using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 
 # LLVM provides helper macros via LLVM_CMAKE_DIR (e.g. AddLLVM)
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
