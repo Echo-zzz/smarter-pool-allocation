@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(candidate-analysis LANGUAGES CXX)
+project(canaidate-analysis LANGUAGES C CXX)
 
 # Require C++17 for the analysis implementation
 set(CMAKE_CXX_STANDARD 17)

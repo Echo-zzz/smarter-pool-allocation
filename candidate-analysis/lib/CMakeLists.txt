@@ -4,6 +4,16 @@ set(CANDIDATE_ANALYSIS_SOURCES
 
 add_library(CandidateAnalysis MODULE ${CANDIDATE_ANALYSIS_SOURCES})
 
+# Prefer the monolithic shared LLVM library to avoid duplicate cl::opts
+if (LLVM_LINK_LLVM_DYLIB)
+  target_link_libraries(CandidateAnalysis PRIVATE LLVM)
+else()
+  message(WARNING
+    "Falling back to component libs (LLVMCore, LLVMAnalysis, LLVMSupport). "
+    "This can cause duplicate command-line option registrations when loaded by opt.")
+  target_link_libraries(CandidateAnalysis PRIVATE LLVMCore LLVMAnalysis LLVMSupport)
+endif()
+
 # LLVM expects plugin targets to be built with PIC
 set_target_properties(CandidateAnalysis PROPERTIES
     OUTPUT_NAME "CandidateAnalysis"

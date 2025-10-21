@@ -1,0 +1,15 @@
+# CMake builds
+build*/
+cmake-build*/
+candidate-analysis/build-*/
+
+# Generated compile commands
+compile_commands.json
+
+# Editor settings
+.vscode/
+.idea/
+
+# Misc artifacts
+*.swp
+*.tmp
