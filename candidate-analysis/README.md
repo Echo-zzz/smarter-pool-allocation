@@ -5,9 +5,9 @@ Out-of-tree LLVM analysis pass that implements the affinity-driven field classif
 ## Building
 
 ```
-cmake -S candidate-analysis -B build-candidate \
-      -DLLVM_DIR=/path/to/llvm/lib/cmake/llvm
-cmake --build build-candidate
+cmake -S . -B build-canaidate \  -DLLVM_DIR="$(llvm-config-19 --cmakedir)" \  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build-canaidate --config Release
 ```
 
 This generates `libCandidateAnalysis.so` inside `build-candidate/lib/`.
@@ -17,8 +17,11 @@ This generates `libCandidateAnalysis.so` inside `build-candidate/lib/`.
 Use `opt` (from the same LLVM build) to load the plugin and run the pass:
 
 ```
-opt -load-pass-plugin build-candidate/lib/libCandidateAnalysis.so \
-    -passes=candidate-analysis example.ll -disable-output
+"$(llvm-config-19 --bindir)"/opt \
+  -load-pass-plugin /home/really146/projects/smarter-pool-allocation/candidate-analysis/build-canaidate/lib/libCandidateAnalysis.so \
+  -passes=candidate-analysis \
+  -disable-output \
+  /home/really146/projects/smarter-pool-allocation/candidate-analysis/test/inputs/simple_nested.ll
 ```
 
 Test scaffolding and dedicated drivers live in the `tools/` and `test/` directories.
