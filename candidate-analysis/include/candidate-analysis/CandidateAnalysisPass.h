@@ -38,6 +38,7 @@ namespace candidate
     };
 
     static void dumpLoopGraph(const llvm::Function &F, const FunctionLoopGraph &LoopGraph);
+    static void dumpLoopFieldRefs(const llvm::Function &F, const FunctionLoopGraph &LoopGraph);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the

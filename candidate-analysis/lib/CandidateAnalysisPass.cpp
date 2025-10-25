@@ -1,7 +1,10 @@
 #include "candidate-analysis/CandidateAnalysisPass.h"
+#include "candidate-analysis/FieldRef.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Debug.h"
@@ -17,7 +20,7 @@ namespace candidate
 
   PreservedAnalyses CandidateAnalysisPass::run(Module &M, ModuleAnalysisManager &MAM)
   {
-    LLVM_DEBUG(dbgs() << "[candidate-analysis] Visiting module: " << M.getName() << '\n');
+    // LLVM_DEBUG(dbgs() << "[candidate-analysis] Visiting module: " << M.getName() << '\n');
 
     // TODO: Implement loop-affinity analysis here.
 
@@ -70,13 +73,15 @@ namespace candidate
         }
       }
 
-      dumpLoopGraph(F, LoopGraph);
+      // dumpLoopGraph(F, LoopGraph);
+      dumpLoopFieldRefs(F, LoopGraph);
     }
     (void)MAM;
 
     return PreservedAnalyses::all();
   }
 
+  // graph that walk through the loops in a function
   void CandidateAnalysisPass::dumpLoopGraph(const Function &F, const FunctionLoopGraph &LoopGraph)
   {
     outs() << "[candidate-analysis] Loop graph for function ";
@@ -120,6 +125,77 @@ namespace candidate
           outs() << ", ";
       }
       outs() << "}\n";
+    }
+  }
+
+  void CandidateAnalysisPass::dumpLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph)
+  {
+    outs() << "[candidate-analysis] Struct field references per loop in function ";
+    if (F.hasName())
+      outs() << F.getName();
+    else
+      F.printAsOperand(outs(), false);
+    outs() << '\n';
+
+    if (LoopGraph.Nodes.empty())
+    {
+      outs() << "  (no loops)\n";
+      return;
+    }
+
+    for (int Index = 0, E = static_cast<int>(LoopGraph.Nodes.size()); Index != E; ++Index)
+    {
+      const LoopNode &Node = LoopGraph.Nodes[Index];
+      const Loop *L = Node.LoopRef;
+
+      SmallVector<std::pair<StructType *, unsigned>, 8> Fields;
+      if (L)
+      {
+        auto recordPtr = [&](Value *Ptr)
+        {
+          FieldRef Ref = getStructFieldRef(Ptr);
+          if (!Ref.ST)
+            return;
+          for (const auto &Existing : Fields)
+            if (Existing.first == Ref.ST && Existing.second == Ref.FieldIndex)
+              return;
+          Fields.emplace_back(Ref.ST, Ref.FieldIndex);
+        };
+
+        for (BasicBlock *BB : L->blocks())
+        {
+          for (Instruction &I : *BB)
+          {
+            if (auto *LI = dyn_cast<LoadInst>(&I))
+              recordPtr(LI->getPointerOperand());
+            else if (auto *SI = dyn_cast<StoreInst>(&I))
+              recordPtr(SI->getPointerOperand());
+            else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
+              recordPtr(GEP);
+          }
+        }
+      }
+
+      outs() << "  loop node#" << Index << ": ";
+      if (Fields.empty())
+      {
+        outs() << "no struct-field GEPs\n";
+        continue;
+      }
+
+      for (size_t I = 0; I < Fields.size(); ++I)
+      {
+        StructType *ST = Fields[I].first;
+        unsigned FieldIdx = Fields[I].second;
+        if (ST && ST->hasName())
+          outs() << ST->getName();
+        else
+          outs() << "<anonymous-struct>";
+        outs() << "[" << FieldIdx << "]";
+        if (I + 1 < Fields.size())
+          outs() << ", ";
+      }
+      outs() << "\n";
     }
   }
 
