@@ -10,6 +10,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 
 #define DEBUG_TYPE "candidate-analysis"
 
@@ -73,13 +74,112 @@ namespace candidate
         }
       }
 
-      // dumpLoopGraph(F, LoopGraph);
+      dumpLoopGraph(F, LoopGraph);
       dumpLoopFieldRefs(F, LoopGraph);
+
+      const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
+      auto Groups = collectLoopFieldRefs(F, LoopGraph, BFI);
+
+      // For now, just debug-print group contents to verify:
+      for (const auto &G : Groups)
+      {
+        outs() << "[candidate-analysis] group loop#" << G.LoopNodeIndex << " fields=";
+        for (size_t i = 0; i < G.Fields.size(); ++i)
+        {
+          auto ST = G.Fields[i].ST;
+          unsigned Idx = G.Fields[i].FieldIndex;
+          if (ST && ST->hasName())
+            outs() << ST->getName();
+          else
+            outs() << "<anon>";
+          outs() << "[" << Idx << "]";
+          if (i + 1 < G.Fields.size())
+            outs() << ", ";
+        }
+        if (G.Weight != 0.0)
+          outs() << " weight=" << G.Weight;
+        outs() << "\n";
+      }
     }
     (void)MAM;
 
     return PreservedAnalyses::all();
   }
+
+  // =========================================================
+  // Function that traverse a function's loops and collect struct field accesses for each affinity group
+  std::vector<CandidateAnalysisPass::AffinityGroup> CandidateAnalysisPass::collectLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph, const BlockFrequencyInfo *BFI)
+  {
+    std::vector<AffinityGroup> Groups;
+    Groups.reserve(LoopGraph.Nodes.size() + 1);
+
+    // Helper: add unique FieldID to a vector (set semantics per group)
+    auto addUnique = [](SmallVector<FieldID, 8> &V, FieldID R)
+    {
+      if (!R.ST)
+        return;
+      for (const auto &E : V)
+        if (E.ST == R.ST && E.FieldIndex == R.FieldIndex)
+          return;
+      V.push_back(R);
+    };
+
+    // One group per loop node
+    for (int Index = 0, E = static_cast<int>(LoopGraph.Nodes.size()); Index != E; ++Index)
+    {
+      const LoopNode &Node = LoopGraph.Nodes[Index];
+      const Loop *L = Node.LoopRef;
+      AffinityGroup G;
+      G.F = &F;
+      G.LoopNodeIndex = Index;
+
+      if (L)
+      {
+        // Reuse your exact scan pattern from dumpLoopFieldRefs
+        // (loads, stores, and GEPs inside the loop’s blocks)
+        for (BasicBlock *BB : L->blocks())
+        {
+          for (Instruction &I : *BB)
+          {
+            if (auto *LI = dyn_cast<LoadInst>(&I))
+            {
+              FieldRef Ref = getStructFieldRef(LI->getPointerOperand());
+              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+            }
+            else if (auto *SI = dyn_cast<StoreInst>(&I))
+            {
+              FieldRef Ref = getStructFieldRef(SI->getPointerOperand());
+              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+            }
+            else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
+            {
+              FieldRef Ref = getStructFieldRef(GEP);
+              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+            }
+          }
+        }
+
+        // Optional weight (static): header block frequency
+        if (BFI)
+        {
+          if (const BasicBlock *Hdr = L->getHeader())
+            G.Weight = static_cast<double>(BFI->getBlockFreq(Hdr).getFrequency());
+        }
+      }
+
+      // Only keep non-empty groups for now (you can keep empties if you prefer)
+      if (!G.Fields.empty())
+        Groups.push_back(std::move(G));
+    }
+
+    // (Optional, small scope) Non-loop group: collect fields in BBs with no loop
+    // This is easy to add once you thread LoopInfo or a “BB→loop” map here.
+    // For now, we focus strictly on loop-based groups per your request.
+
+    return Groups;
+  }
+
+  // ================== functions for testing purpose ===================
 
   // graph that walk through the loops in a function
   void CandidateAnalysisPass::dumpLoopGraph(const Function &F, const FunctionLoopGraph &LoopGraph)
@@ -128,6 +228,7 @@ namespace candidate
     }
   }
 
+  // walk through all the loops' field references
   void CandidateAnalysisPass::dumpLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph)
   {
     outs() << "[candidate-analysis] Struct field references per loop in function ";
