@@ -3,6 +3,7 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/Constants.h"
 
 namespace candidate
 {
@@ -20,7 +21,24 @@ namespace candidate
         using namespace llvm;
 
         // Handle inst GEPs and const-expr GEPs uniformly
-        const Value *V = Ptr->stripPointerCasts();
+        const Value *V = Ptr;
+        while (true)
+        {
+            if (auto *BC = dyn_cast<BitCastOperator>(V))
+            {
+                V = BC->getOperand(0);
+                continue;
+            }
+            if (auto *CE = dyn_cast<ConstantExpr>(V))
+            {
+                if (CE->getOpcode() == Instruction::BitCast)
+                {
+                    V = CE->getOperand(0);
+                    continue;
+                }
+            }
+            break;
+        }
         const GEPOperator *GEP = dyn_cast<GEPOperator>(V);
         if (!GEP)
             return {};

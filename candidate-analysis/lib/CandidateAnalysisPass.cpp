@@ -2,9 +2,12 @@
 #include "candidate-analysis/FieldRef.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Debug.h"
@@ -74,11 +77,13 @@ namespace candidate
         }
       }
 
+      DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
+
       dumpLoopGraph(F, LoopGraph);
-      dumpLoopFieldRefs(F, LoopGraph);
+      dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
 
       const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
-      auto Groups = collectLoopFieldRefs(F, LoopGraph, BFI);
+      auto Groups = collectLoopFieldRefs(F, LoopGraph, LI, &DT, BFI);
 
       // For now, just debug-print group contents to verify:
       for (const auto &G : Groups)
@@ -108,7 +113,7 @@ namespace candidate
 
   // =========================================================
   // Function that traverse a function's loops and collect struct field accesses for each affinity group
-  std::vector<CandidateAnalysisPass::AffinityGroup> CandidateAnalysisPass::collectLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph, const BlockFrequencyInfo *BFI)
+  std::vector<CandidateAnalysisPass::AffinityGroup> CandidateAnalysisPass::collectLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph, const LoopInfo &LI, const DominatorTree *DT, const BlockFrequencyInfo *BFI)
   {
     std::vector<AffinityGroup> Groups;
     Groups.reserve(LoopGraph.Nodes.size() + 1);
@@ -135,15 +140,57 @@ namespace candidate
 
       if (L)
       {
-        // Reuse your exact scan pattern from dumpLoopFieldRefs
-        // (loads, stores, and GEPs inside the loop’s blocks)
+        const BasicBlock *Header = L->getHeader();
+        SmallPtrSet<BasicBlock *, 16> Visited;
+        SmallVector<BasicBlock *, 16> Worklist;
+        SmallVector<BasicBlock *, 16> BodyBlocks;
+
+        auto enqueueBlock = [&](BasicBlock *BB)
+        {
+          if (!BB)
+            return;
+          if (Visited.insert(BB).second)
+          {
+            Worklist.push_back(BB);
+            BodyBlocks.push_back(BB);
+          }
+        };
+
         for (BasicBlock *BB : L->blocks())
+          enqueueBlock(BB);
+
+        if (BodyBlocks.empty() && Header)
+          enqueueBlock(const_cast<BasicBlock *>(Header));
+
+        while (!Worklist.empty())
+        {
+          BasicBlock *BB = Worklist.pop_back_val();
+          for (BasicBlock *Succ : successors(BB))
+          {
+            if (!Succ)
+              continue;
+
+            // Skip if this block naturally belongs to a child loop.
+            if (Loop *SuccLoop = LI.getLoopFor(Succ))
+            {
+              if (SuccLoop != L && L->contains(SuccLoop))
+                continue;
+            }
+
+            if (DT && Header && !DT->dominates(Header, Succ))
+              continue;
+
+            enqueueBlock(Succ);
+          }
+        }
+
+        for (BasicBlock *BB : BodyBlocks)
         {
           for (Instruction &I : *BB)
           {
-            if (auto *LI = dyn_cast<LoadInst>(&I))
+            if (auto *Load = dyn_cast<LoadInst>(&I))
             {
-              FieldRef Ref = getStructFieldRef(LI->getPointerOperand());
+              FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
               addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
             }
             else if (auto *SI = dyn_cast<StoreInst>(&I))
@@ -229,7 +276,8 @@ namespace candidate
   }
 
   // walk through all the loops' field references
-  void CandidateAnalysisPass::dumpLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph)
+  void CandidateAnalysisPass::dumpLoopFieldRefs(const Function &F, const FunctionLoopGraph &LoopGraph,
+                                                const LoopInfo &LI, const DominatorTree *DT)
   {
     outs() << "[candidate-analysis] Struct field references per loop in function ";
     if (F.hasName())
@@ -244,50 +292,27 @@ namespace candidate
       return;
     }
 
+    std::vector<AffinityGroup> Groups = collectLoopFieldRefs(F, LoopGraph, LI, DT, /*BFI=*/nullptr);
+
+    DenseMap<int, SmallVector<FieldID, 8>> FieldsByLoop;
+    for (const auto &G : Groups)
+      FieldsByLoop[G.LoopNodeIndex] = G.Fields;
+
     for (int Index = 0, E = static_cast<int>(LoopGraph.Nodes.size()); Index != E; ++Index)
     {
-      const LoopNode &Node = LoopGraph.Nodes[Index];
-      const Loop *L = Node.LoopRef;
-
-      SmallVector<std::pair<StructType *, unsigned>, 8> Fields;
-      if (L)
-      {
-        auto recordPtr = [&](Value *Ptr)
-        {
-          FieldRef Ref = getStructFieldRef(Ptr);
-          if (!Ref.ST)
-            return;
-          for (const auto &Existing : Fields)
-            if (Existing.first == Ref.ST && Existing.second == Ref.FieldIndex)
-              return;
-          Fields.emplace_back(Ref.ST, Ref.FieldIndex);
-        };
-
-        for (BasicBlock *BB : L->blocks())
-        {
-          for (Instruction &I : *BB)
-          {
-            if (auto *LI = dyn_cast<LoadInst>(&I))
-              recordPtr(LI->getPointerOperand());
-            else if (auto *SI = dyn_cast<StoreInst>(&I))
-              recordPtr(SI->getPointerOperand());
-            else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
-              recordPtr(GEP);
-          }
-        }
-      }
-
       outs() << "  loop node#" << Index << ": ";
-      if (Fields.empty())
+      auto It = FieldsByLoop.find(Index);
+      if (It == FieldsByLoop.end() || It->second.empty())
       {
         outs() << "no struct-field GEPs\n";
         continue;
       }
 
+      const auto &Fields = It->second;
       for (size_t I = 0; I < Fields.size(); ++I)
       {
-        StructType *ST = Fields[I].first;
-        unsigned FieldIdx = Fields[I].second;
+        StructType *ST = Fields[I].ST;
+        unsigned FieldIdx = Fields[I].FieldIndex;
         if (ST && ST->hasName())
           outs() << ST->getName();
         else

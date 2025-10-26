@@ -10,7 +10,9 @@ namespace llvm
   class Module;
   struct PassPluginLibraryInfo;
   class Loop;
+  class LoopInfo;
   class Function;
+  class DominatorTree;
 } // namespace llvm
 
 namespace candidate
@@ -69,10 +71,13 @@ namespace candidate
     static std::vector<AffinityGroup>
     collectLoopFieldRefs(const llvm::Function &F,
                          const FunctionLoopGraph &LoopGraph,
+                         const llvm::LoopInfo &LI,
+                         const llvm::DominatorTree *DT,
                          const llvm::BlockFrequencyInfo *BFI = nullptr);
 
     static void dumpLoopGraph(const llvm::Function &F, const FunctionLoopGraph &LoopGraph);
-    static void dumpLoopFieldRefs(const llvm::Function &F, const FunctionLoopGraph &LoopGraph);
+    static void dumpLoopFieldRefs(const llvm::Function &F, const FunctionLoopGraph &LoopGraph,
+                                  const llvm::LoopInfo &LI, const llvm::DominatorTree *DT);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the
