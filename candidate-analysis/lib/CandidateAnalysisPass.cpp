@@ -79,11 +79,13 @@ namespace candidate
 
       DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
 
-      dumpLoopGraph(F, LoopGraph);
-      dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
+      // // function calls for testing purpose
+      // dumpLoopGraph(F, LoopGraph);
+      // dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
 
-      const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
-      auto Groups = collectLoopFieldRefs(F, LoopGraph, LI, &DT, BFI);
+      // const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
+      const BlockFrequencyInfo &BFI = FAM.getResult<BlockFrequencyAnalysis>(F);
+      auto Groups = collectLoopFieldRefs(F, LoopGraph, LI, &DT, &BFI);
 
       // For now, just debug-print group contents to verify:
       for (const auto &G : Groups)
