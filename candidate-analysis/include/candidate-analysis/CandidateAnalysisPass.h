@@ -3,6 +3,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include <vector>
 
 namespace llvm
@@ -49,11 +50,26 @@ namespace candidate
         return ST == O.ST && FieldIndex == O.FieldIndex;
       }
     };
-    struct FieldIDHash
+    struct FieldIDInfo
     {
-      size_t operator()(const FieldID &F) const
+      static FieldID getEmptyKey()
       {
-        return std::hash<void *>()(F.ST) ^ (static_cast<size_t>(F.FieldIndex) * 1315423911u);
+        return {reinterpret_cast<llvm::StructType *>(-1), ~0u};
+      }
+
+      static FieldID getTombstoneKey()
+      {
+        return {reinterpret_cast<llvm::StructType *>(-2), ~0u};
+      }
+
+      static unsigned getHashValue(const FieldID &F)
+      {
+        return static_cast<unsigned>((reinterpret_cast<uintptr_t>(F.ST) >> 3) ^ (F.FieldIndex * 1315423911u));
+      }
+
+      static bool isEqual(const FieldID &LHS, const FieldID &RHS)
+      {
+        return LHS == RHS;
       }
     };
 
@@ -62,7 +78,7 @@ namespace candidate
     {
       const llvm::Function *F = nullptr;    // provenance (debug)
       int LoopNodeIndex = -1;               // -1 for “non-loop” group
-      llvm::SmallVector<FieldID, 8> Fields; // keep unique fields in this group
+      llvm::DenseMap<FieldID, unsigned, FieldIDInfo> Fields; // frequency of each field use
       double Weight = 0.0;                  // to be filled later
     };
 

@@ -91,16 +91,17 @@ namespace candidate
       for (const auto &G : Groups)
       {
         outs() << "[candidate-analysis] group loop#" << G.LoopNodeIndex << " fields=";
-        for (size_t i = 0; i < G.Fields.size(); ++i)
+        size_t Printed = 0;
+        for (const auto &KV : G.Fields)
         {
-          auto ST = G.Fields[i].ST;
-          unsigned Idx = G.Fields[i].FieldIndex;
+          auto ST = KV.first.ST;
+          unsigned Idx = KV.first.FieldIndex;
           if (ST && ST->hasName())
             outs() << ST->getName();
           else
             outs() << "<anon>";
           outs() << "[" << Idx << "]";
-          if (i + 1 < G.Fields.size())
+          if (++Printed < G.Fields.size())
             outs() << ", ";
         }
         if (G.Weight != 0.0)
@@ -120,15 +121,16 @@ namespace candidate
     std::vector<AffinityGroup> Groups;
     Groups.reserve(LoopGraph.Nodes.size() + 1);
 
-    // Helper: add unique FieldID to a vector (set semantics per group)
-    auto addUnique = [](SmallVector<FieldID, 8> &V, FieldID R)
+    // Helper: bump field frequency within a group.
+    auto bumpField = [](AffinityGroup &Group, FieldID R)
     {
       if (!R.ST)
         return;
-      for (const auto &E : V)
-        if (E.ST == R.ST && E.FieldIndex == R.FieldIndex)
-          return;
-      V.push_back(R);
+      auto It = Group.Fields.find(R);
+      if (It == Group.Fields.end())
+        Group.Fields.insert({R, 1u});
+      else
+        ++It->second;
     };
 
     // One group per loop node
@@ -215,17 +217,17 @@ namespace candidate
             if (auto *Load = dyn_cast<LoadInst>(&I))
             {
               FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
-              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+              bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
             else if (auto *SI = dyn_cast<StoreInst>(&I))
             {
               FieldRef Ref = getStructFieldRef(SI->getPointerOperand());
-              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+              bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
             else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
             {
               FieldRef Ref = getStructFieldRef(GEP);
-              addUnique(G.Fields, {Ref.ST, Ref.FieldIndex});
+              bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
           }
         }
@@ -318,9 +320,14 @@ namespace candidate
 
     std::vector<AffinityGroup> Groups = collectLoopFieldRefs(F, LoopGraph, LI, DT, /*BFI=*/nullptr);
 
-    DenseMap<int, SmallVector<FieldID, 8>> FieldsByLoop;
+    DenseMap<int, SmallVector<std::pair<FieldID, unsigned>, 4>> FieldsByLoop;
     for (const auto &G : Groups)
-      FieldsByLoop[G.LoopNodeIndex] = G.Fields;
+    {
+      SmallVector<std::pair<FieldID, unsigned>, 4> Local;
+      for (const auto &KV : G.Fields)
+        Local.push_back(KV);
+      FieldsByLoop[G.LoopNodeIndex] = std::move(Local);
+    }
 
     for (int Index = 0, E = static_cast<int>(LoopGraph.Nodes.size()); Index != E; ++Index)
     {
@@ -335,8 +342,8 @@ namespace candidate
       const auto &Fields = It->second;
       for (size_t I = 0; I < Fields.size(); ++I)
       {
-        StructType *ST = Fields[I].ST;
-        unsigned FieldIdx = Fields[I].FieldIndex;
+        StructType *ST = Fields[I].first.ST;
+        unsigned FieldIdx = Fields[I].first.FieldIndex;
         if (ST && ST->hasName())
           outs() << ST->getName();
         else
