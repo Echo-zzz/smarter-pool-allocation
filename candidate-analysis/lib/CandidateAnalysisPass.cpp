@@ -156,18 +156,38 @@ namespace candidate
           }
         };
 
+        // Always enqueue the blocks LoopInfo already associates with the loop.
         for (BasicBlock *BB : L->blocks())
+        {
+          if (LI.getLoopFor(BB) != L)
+            continue; // owned by a subloop; let child handle it
           enqueueBlock(BB);
+        }
+
+        // LoopInfo::contains can report additional body blocks even when the loop
+        // is not in canonical form (e.g. -O0 IR), so seed them as well.
+        for (const BasicBlock &BBRef : F)
+        {
+          BasicBlock *BB = const_cast<BasicBlock *>(&BBRef);
+          if (L->contains(BB) && LI.getLoopFor(BB) == L)
+            enqueueBlock(BB);
+        }
 
         if (BodyBlocks.empty() && Header)
           enqueueBlock(const_cast<BasicBlock *>(Header));
 
+        // Reachability walk: stay inside the loop, skip subloops, and ensure the
+        // header dominates successors before enqueuing them. This gives us a
+        // robust set of body blocks without accidentally including post-loop code.
         while (!Worklist.empty())
         {
           BasicBlock *BB = Worklist.pop_back_val();
           for (BasicBlock *Succ : successors(BB))
           {
             if (!Succ)
+              continue;
+
+            if (!L->contains(Succ) || LI.getLoopFor(Succ) != L)
               continue;
 
             // Skip if this block naturally belongs to a child loop.
@@ -184,6 +204,8 @@ namespace candidate
           }
         }
 
+        // Collect struct field references from every block determined to be part
+        // of the loop body.
         for (BasicBlock *BB : BodyBlocks)
         {
           for (Instruction &I : *BB)
