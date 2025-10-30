@@ -1,9 +1,10 @@
 #pragma once
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/DenseMap.h"
 #include <vector>
 
 namespace llvm
@@ -14,6 +15,7 @@ namespace llvm
   class LoopInfo;
   class Function;
   class DominatorTree;
+  class BlockFrequencyInfo;
 } // namespace llvm
 
 namespace candidate
@@ -94,6 +96,12 @@ namespace candidate
     static void dumpLoopGraph(const llvm::Function &F, const FunctionLoopGraph &LoopGraph);
     static void dumpLoopFieldRefs(const llvm::Function &F, const FunctionLoopGraph &LoopGraph,
                                   const llvm::LoopInfo &LI, const llvm::DominatorTree *DT);
+
+    static llvm::StringMap<double>
+    mergeIdenticalGroupsByKey(const std::vector<AffinityGroup> &Groups);
+
+    static void dumpAffinityGroups(const std::vector<AffinityGroup> &Groups);
+    static void dumpMergedGroups(const llvm::StringMap<double> &MergedGroups);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the

@@ -4,6 +4,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
@@ -27,7 +29,7 @@ namespace candidate
     // LLVM_DEBUG(dbgs() << "[candidate-analysis] Visiting module: " << M.getName() << '\n');
 
     // TODO: Implement loop-affinity analysis here.
-
+    std::vector<AffinityGroup> AllGroups;
     // pull the per-function analysis manager from the module pass
     FunctionAnalysisManager &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
     for (Function &F : M)
@@ -81,34 +83,18 @@ namespace candidate
 
       // // function calls for testing purpose
       // dumpLoopGraph(F, LoopGraph);
-      dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
+      // dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
 
       // const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
       const BlockFrequencyInfo &BFI = FAM.getResult<BlockFrequencyAnalysis>(F);
       auto Groups = collectLoopFieldRefs(F, LoopGraph, LI, &DT, &BFI);
+      AllGroups.insert(AllGroups.end(), Groups.begin(), Groups.end());
 
-      // For now, just debug-print group contents to verify:
-      for (const auto &G : Groups)
-      {
-        outs() << "[candidate-analysis] group loop#" << G.LoopNodeIndex << " fields=";
-        size_t Printed = 0;
-        for (const auto &KV : G.Fields)
-        {
-          auto ST = KV.first.ST;
-          unsigned Idx = KV.first.FieldIndex;
-          if (ST && ST->hasName())
-            outs() << ST->getName();
-          else
-            outs() << "<anon>";
-          outs() << "[" << Idx << "]";
-          if (++Printed < G.Fields.size())
-            outs() << ", ";
-        }
-        if (G.Weight != 0.0)
-          outs() << " weight=" << G.Weight;
-        outs() << "\n";
-      }
+      // dumpAffinityGroups(Groups);
     }
+    auto Merged = mergeIdenticalGroupsByKey(AllGroups);
+    // debug-print the merged result
+    dumpMergedGroups(Merged);
     (void)MAM;
 
     return PreservedAnalyses::all();
@@ -286,6 +272,78 @@ namespace candidate
       Groups.push_back(std::move(NonLoopGroup));
 
     return Groups;
+  }
+
+  // Canonicalize a group into a stable, sorted key and accumulate weight per key.
+  llvm::StringMap<double>
+  CandidateAnalysisPass::mergeIdenticalGroupsByKey(const std::vector<AffinityGroup> &Groups)
+  {
+    using namespace llvm;
+    StringMap<double> Accum; // Key → Σ Weight
+
+    SmallString<256> KeyBuf;
+    for (const auto &G : Groups)
+    {
+      // Build a canonical vector of (StructType*, FieldIndex)
+      SmallVector<std::pair<StructType *, unsigned>, 8> Vec;
+      Vec.reserve(G.Fields.size());
+      for (const auto &KV : G.Fields)
+        Vec.emplace_back(KV.first.ST, KV.first.FieldIndex);
+
+      // Sort to make the key order-independent
+      llvm::sort(Vec, [](const auto &A, const auto &B)
+                 {
+      if (A.first != B.first) return A.first < B.first;       // pointer order OK intra-module
+      return A.second < B.second; });
+
+      // Serialize to a compact string key (pointer prints are stable within a run)
+      KeyBuf.clear();
+      {
+        raw_svector_ostream OS(KeyBuf);
+        for (const auto &E : Vec)
+        {
+          OS << E.first << '.' << E.second << ';';
+        }
+      }
+
+      // Sum the weights; if a group has 0.0 weight, it contributes 0.
+      Accum[KeyBuf] += G.Weight;
+    }
+
+    return Accum;
+  }
+
+  void CandidateAnalysisPass::dumpAffinityGroups(const std::vector<AffinityGroup> &Groups)
+  {
+    for (const auto &G : Groups)
+    {
+      outs() << "[candidate-analysis] group loop#" << G.LoopNodeIndex << " fields=";
+      size_t Printed = 0;
+      for (const auto &KV : G.Fields)
+      {
+        auto *ST = KV.first.ST;
+        unsigned Idx = KV.first.FieldIndex;
+        if (ST && ST->hasName())
+          outs() << ST->getName();
+        else
+          outs() << "<anon>";
+        outs() << "[" << Idx << "]";
+        if (++Printed < G.Fields.size())
+          outs() << ", ";
+      }
+      if (G.Weight != 0.0)
+        outs() << " weight=" << G.Weight;
+      outs() << "\n";
+    }
+  }
+
+  void CandidateAnalysisPass::dumpMergedGroups(const llvm::StringMap<double> &MergedGroups)
+  {
+    for (const auto &KV : MergedGroups)
+    {
+      outs() << "[candidate-analysis] merged key={" << KV.getKey()
+             << "} total_weight=" << KV.getValue() << "\n";
+    }
   }
 
   // ================== functions for testing purpose ===================
