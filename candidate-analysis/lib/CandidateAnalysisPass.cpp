@@ -81,7 +81,7 @@ namespace candidate
 
       // // function calls for testing purpose
       // dumpLoopGraph(F, LoopGraph);
-      // dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
+      dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
 
       // const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
       const BlockFrequencyInfo &BFI = FAM.getResult<BlockFrequencyAnalysis>(F);
@@ -245,9 +245,45 @@ namespace candidate
         Groups.push_back(std::move(G));
     }
 
-    // (Optional, small scope) Non-loop group: collect fields in BBs with no loop
-    // This is easy to add once you thread LoopInfo or a “BB→loop” map here.
-    // For now, we focus strictly on loop-based groups per your request.
+    // Collect field references for non-loop basic blocks into a pseudo group.
+    AffinityGroup NonLoopGroup;
+    NonLoopGroup.F = &F;
+    NonLoopGroup.LoopNodeIndex = -1; // denote "routine entry" pseudo-node
+
+    if (BFI)
+      NonLoopGroup.Weight = 0.0;
+
+    for (const BasicBlock &BBRef : F)
+    {
+      const BasicBlock *BB = &BBRef;
+      if (LI.getLoopFor(BB))
+        continue;
+
+      if (BFI)
+        NonLoopGroup.Weight += static_cast<double>(BFI->getBlockFreq(BB).getFrequency());
+
+      for (const Instruction &I : BBRef)
+      {
+        if (const auto *Load = dyn_cast<LoadInst>(&I))
+        {
+          FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
+          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+        }
+        else if (const auto *SI = dyn_cast<StoreInst>(&I))
+        {
+          FieldRef Ref = getStructFieldRef(SI->getPointerOperand());
+          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+        }
+        else if (const auto *GEP = dyn_cast<GetElementPtrInst>(&I))
+        {
+          FieldRef Ref = getStructFieldRef(GEP);
+          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+        }
+      }
+    }
+
+    if (!NonLoopGroup.Fields.empty())
+      Groups.push_back(std::move(NonLoopGroup));
 
     return Groups;
   }
