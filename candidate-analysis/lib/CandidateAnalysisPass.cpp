@@ -18,6 +18,10 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 
+#include <algorithm>
+#include <tuple>
+#include <utility>
+
 #define DEBUG_TYPE "candidate-analysis"
 
 using namespace llvm;
@@ -94,8 +98,10 @@ namespace candidate
       // dumpAffinityGroups(Groups);
     }
     auto MergedGroups = mergeIdenticalGroupsByKey(AllGroups);
-    // debug-print the merged result
+    // Debug-print the merged groups and the derived per-type affinity graphs.
     dumpMergedGroups(MergedGroups);
+    auto TypeGraphs = buildTypeAffinityGraphs(MergedGroups);
+    dumpTypeAffinityGraphs(TypeGraphs);
     (void)MAM;
 
     return PreservedAnalyses::all();
@@ -405,6 +411,144 @@ namespace candidate
           outs() << ", ";
       }
       outs() << "} total_weight=" << G.Weight << "\n";
+    }
+  }
+
+  llvm::DenseMap<StructType *, CandidateAnalysisPass::TypeAffinityGraph>
+  CandidateAnalysisPass::buildTypeAffinityGraphs(const std::vector<AffinityGroup> &MergedGroups)
+  {
+    llvm::DenseMap<StructType *, TypeAffinityGraph> Graphs;
+
+    for (const AffinityGroup &Group : MergedGroups)
+    {
+      if (Group.Fields.empty())
+        continue;
+
+      // Bucket all fields that participate in this affinity group by struct type.
+      llvm::DenseMap<StructType *, llvm::SmallVector<std::pair<unsigned, unsigned>, 8>> FieldsByType;
+      for (const auto &KV : Group.Fields)
+      {
+        StructType *ST = KV.first.ST;
+        if (!ST)
+          continue; // Skip non-struct references; nothing to graph.
+        FieldsByType[ST].emplace_back(KV.first.FieldIndex, KV.second);
+      }
+
+      // Populate the per-type graphs from the per-type buckets.
+      for (auto &TyEntry : FieldsByType)
+      {
+        StructType *ST = TyEntry.first;
+        auto &Entries = TyEntry.second;
+
+        // Canonicalise order to keep graph construction deterministic.
+        llvm::sort(Entries, [](const auto &A, const auto &B)
+                   { return A.first < B.first; });
+
+        TypeAffinityGraph &Graph = Graphs[ST];
+
+        // Update per-field hotness: weight is distributed proportionally to occurrences.
+        for (const auto &FieldEntry : Entries)
+        {
+          unsigned FieldIdx = FieldEntry.first;
+          unsigned Count = FieldEntry.second;
+          Graph.FieldHotness[FieldIdx] += Group.Weight * static_cast<double>(Count);
+        }
+
+        // Update pairwise affinities: undirected edge weight is the accumulated group weight.
+        if (Entries.size() > 1)
+        {
+          for (size_t I = 0, E = Entries.size(); I < E; ++I)
+          {
+            unsigned IdxI = Entries[I].first;
+            for (size_t J = I + 1; J < E; ++J)
+            {
+              unsigned IdxJ = Entries[J].first;
+              unsigned MinIdx = std::min(IdxI, IdxJ);
+              unsigned MaxIdx = std::max(IdxI, IdxJ);
+              Graph.EdgeWeights[MinIdx][MaxIdx] += Group.Weight;
+            }
+          }
+        }
+      }
+    }
+
+    return Graphs;
+  }
+
+  void CandidateAnalysisPass::dumpTypeAffinityGraphs(const llvm::DenseMap<StructType *, TypeAffinityGraph> &Graphs)
+  {
+    if (Graphs.empty())
+    {
+      outs() << "[candidate-analysis] no type affinity graphs constructed\n";
+      return;
+    }
+
+    for (const auto &TyEntry : Graphs)
+    {
+      StructType *ST = TyEntry.first;
+      const TypeAffinityGraph &Graph = TyEntry.second;
+
+      outs() << "[candidate-analysis] type ";
+      if (ST && ST->hasName())
+        outs() << ST->getName();
+      else
+        outs() << "<anon-struct@" << ST << ">";
+      outs() << "\n";
+
+      // Dump per-field hotness in ascending field index order.
+      llvm::SmallVector<std::pair<unsigned, double>, 8> Hotness;
+      Hotness.reserve(Graph.FieldHotness.size());
+      for (const auto &KV : Graph.FieldHotness)
+        Hotness.emplace_back(KV.first, KV.second);
+      llvm::sort(Hotness, [](const auto &A, const auto &B)
+                 { return A.first < B.first; });
+
+      outs() << "    hotness: ";
+      if (Hotness.empty())
+      {
+        outs() << "(none)\n";
+      }
+      else
+      {
+        for (size_t I = 0; I < Hotness.size(); ++I)
+        {
+          outs() << Hotness[I].first << "=" << Hotness[I].second;
+          if (I + 1 < Hotness.size())
+            outs() << ", ";
+        }
+        outs() << "\n";
+      }
+
+      // Dump edge weights with canonicalised endpoints.
+      outs() << "    edges: ";
+      bool PrintedEdge = false;
+      llvm::SmallVector<std::tuple<unsigned, unsigned, double>, 16> EdgeList;
+      for (const auto &FromEntry : Graph.EdgeWeights)
+      {
+        unsigned FromIdx = FromEntry.first;
+        for (const auto &ToEntry : FromEntry.second)
+        {
+          EdgeList.emplace_back(FromIdx, ToEntry.first, ToEntry.second);
+        }
+      }
+      llvm::sort(EdgeList, [](const auto &A, const auto &B)
+                 {
+                   if (std::get<0>(A) != std::get<0>(B))
+                     return std::get<0>(A) < std::get<0>(B);
+                   if (std::get<1>(A) != std::get<1>(B))
+                     return std::get<1>(A) < std::get<1>(B);
+                   return std::get<2>(A) < std::get<2>(B);
+                 });
+
+      for (const auto &Edge : EdgeList)
+      {
+        outs() << "(" << std::get<0>(Edge) << "," << std::get<1>(Edge) << ")=" << std::get<2>(Edge);
+        outs() << " ";
+        PrintedEdge = true;
+      }
+      if (!PrintedEdge)
+        outs() << "(none)";
+      outs() << "\n";
     }
   }
 

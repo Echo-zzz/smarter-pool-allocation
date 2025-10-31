@@ -84,6 +84,14 @@ namespace candidate
       double Weight = 0.0;                  // to be filled later
     };
 
+    struct TypeAffinityGraph
+    {
+      // Aggregate “hotness” for each field index of the struct.
+      llvm::DenseMap<unsigned, double> FieldHotness;
+      // Undirected edge weights between field indices, stored with canonicalised endpoints.
+      llvm::DenseMap<unsigned, llvm::DenseMap<unsigned, double>> EdgeWeights;
+    };
+
     // Collect one AffinityGroup per loop (and optionally one non-loop group).
     // If BFI is provided, we'll fill Weight from the loop header block frequency.
     static std::vector<AffinityGroup>
@@ -102,6 +110,10 @@ namespace candidate
 
     static void dumpAffinityGroups(const std::vector<AffinityGroup> &Groups);
     static void dumpMergedGroups(const std::vector<AffinityGroup> &MergedGroups);
+
+    static llvm::DenseMap<llvm::StructType *, TypeAffinityGraph>
+    buildTypeAffinityGraphs(const std::vector<AffinityGroup> &MergedGroups);
+    static void dumpTypeAffinityGraphs(const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the
