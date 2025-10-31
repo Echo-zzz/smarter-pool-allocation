@@ -92,6 +92,20 @@ namespace candidate
       llvm::DenseMap<unsigned, llvm::DenseMap<unsigned, double>> EdgeWeights;
     };
 
+    struct FieldScore
+    {
+      double Hotness = 0.0;           // Absolute hotness from BlockFrequencyInfo
+      double RelativeHotness = 0.0;   // Percentage relative to the hottest field
+      bool IsCold = false;            // Relative hotness falls below the cold threshold
+    };
+
+    struct StructProfitability
+    {
+      llvm::DenseMap<unsigned, FieldScore> FieldScores;
+      double MaxHotness = 0.0;
+      bool IsCandidate = false;
+    };
+
     // Collect one AffinityGroup per loop (and optionally one non-loop group).
     // If BFI is provided, we'll fill Weight from the loop header block frequency.
     static std::vector<AffinityGroup>
@@ -114,6 +128,10 @@ namespace candidate
     static llvm::DenseMap<llvm::StructType *, TypeAffinityGraph>
     buildTypeAffinityGraphs(const std::vector<AffinityGroup> &MergedGroups);
     static void dumpTypeAffinityGraphs(const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
+
+    static llvm::DenseMap<llvm::StructType *, StructProfitability>
+    analyzeStructProfitability(const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
+    static void dumpProfitabilitySummary(const llvm::DenseMap<llvm::StructType *, StructProfitability> &Profit);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the

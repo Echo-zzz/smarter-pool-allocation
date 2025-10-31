@@ -102,6 +102,8 @@ namespace candidate
     dumpMergedGroups(MergedGroups);
     auto TypeGraphs = buildTypeAffinityGraphs(MergedGroups);
     dumpTypeAffinityGraphs(TypeGraphs);
+    auto ProfitSummary = analyzeStructProfitability(TypeGraphs);
+    dumpProfitabilitySummary(ProfitSummary);
     (void)MAM;
 
     return PreservedAnalyses::all();
@@ -549,6 +551,89 @@ namespace candidate
       if (!PrintedEdge)
         outs() << "(none)";
       outs() << "\n";
+    }
+  }
+
+  llvm::DenseMap<StructType *, CandidateAnalysisPass::StructProfitability>
+  CandidateAnalysisPass::analyzeStructProfitability(const llvm::DenseMap<StructType *, TypeAffinityGraph> &Graphs)
+  {
+    llvm::DenseMap<StructType *, StructProfitability> Result;
+    constexpr double ColdThresholdPct = 7.5;
+
+    for (const auto &TyEntry : Graphs)
+    {
+      StructType *ST = TyEntry.first;
+      const TypeAffinityGraph &Graph = TyEntry.second;
+
+      if (Graph.FieldHotness.empty())
+        continue;
+
+      StructProfitability &Summary = Result[ST];
+
+      // Identify the hottest field in the struct for normalisation.
+      double MaxHotness = 0.0;
+      for (const auto &KV : Graph.FieldHotness)
+        MaxHotness = std::max(MaxHotness, KV.second);
+      Summary.MaxHotness = MaxHotness;
+
+      unsigned ColdCount = 0;
+      for (const auto &KV : Graph.FieldHotness)
+      {
+        unsigned FieldIdx = KV.first;
+        double Hotness = KV.second;
+        FieldScore &Score = Summary.FieldScores[FieldIdx];
+        Score.Hotness = Hotness;
+        if (MaxHotness > 0.0)
+          Score.RelativeHotness = (Hotness / MaxHotness) * 100.0;
+        else
+          Score.RelativeHotness = 0.0;
+
+        Score.IsCold = (Score.RelativeHotness < ColdThresholdPct);
+        if (Score.IsCold)
+          ++ColdCount;
+      }
+
+      Summary.IsCandidate = ColdCount >= 2;
+    }
+
+    return Result;
+  }
+
+  void CandidateAnalysisPass::dumpProfitabilitySummary(const llvm::DenseMap<StructType *, StructProfitability> &Profit)
+  {
+    if (Profit.empty())
+    {
+      outs() << "[candidate-analysis] no profitability data computed\n";
+      return;
+    }
+
+    for (const auto &TyEntry : Profit)
+    {
+      StructType *ST = TyEntry.first;
+      const StructProfitability &Summary = TyEntry.second;
+
+      outs() << "[candidate-analysis] profitability for ";
+      if (ST && ST->hasName())
+        outs() << ST->getName();
+      else
+        outs() << "<anon-struct@" << ST << ">";
+      outs() << " candidate=" << (Summary.IsCandidate ? "yes" : "no") << "\n";
+
+      // Emit per-field scores sorted by index for readability.
+      llvm::SmallVector<std::pair<unsigned, FieldScore>, 8> Entries;
+      Entries.reserve(Summary.FieldScores.size());
+      for (const auto &KV : Summary.FieldScores)
+        Entries.emplace_back(KV.first, KV.second);
+      llvm::sort(Entries, [](const auto &A, const auto &B)
+                 { return A.first < B.first; });
+
+      for (const auto &Entry : Entries)
+      {
+        outs() << "    field " << Entry.first
+               << ": hotness=" << Entry.second.Hotness
+               << " relative=" << Entry.second.RelativeHotness << "% "
+               << (Entry.second.IsCold ? "[cold]" : "[hot]") << "\n";
+      }
     }
   }
 
