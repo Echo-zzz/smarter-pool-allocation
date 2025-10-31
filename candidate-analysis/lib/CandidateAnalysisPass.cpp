@@ -6,6 +6,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
@@ -92,9 +93,9 @@ namespace candidate
 
       // dumpAffinityGroups(Groups);
     }
-    auto Merged = mergeIdenticalGroupsByKey(AllGroups);
+    auto MergedGroups = mergeIdenticalGroupsByKey(AllGroups);
     // debug-print the merged result
-    dumpMergedGroups(Merged);
+    dumpMergedGroups(MergedGroups);
     (void)MAM;
 
     return PreservedAnalyses::all();
@@ -275,26 +276,27 @@ namespace candidate
   }
 
   // Canonicalize a group into a stable, sorted key and accumulate weight per key.
-  llvm::StringMap<double>
+  std::vector<CandidateAnalysisPass::AffinityGroup>
   CandidateAnalysisPass::mergeIdenticalGroupsByKey(const std::vector<AffinityGroup> &Groups)
   {
     using namespace llvm;
-    StringMap<double> Accum; // Key → Σ Weight
+    StringMap<size_t> KeyToIndex;
+    std::vector<AffinityGroup> Result;
 
-    SmallString<256> KeyBuf;
+    SmallString<256> KeyBuf; // reuse buffer to avoid reallocating per group
     for (const auto &G : Groups)
     {
       // Build a canonical vector of (StructType*, FieldIndex)
-      SmallVector<std::pair<StructType *, unsigned>, 8> Vec;
+      SmallVector<std::pair<FieldID, unsigned>, 8> Vec;
       Vec.reserve(G.Fields.size());
       for (const auto &KV : G.Fields)
-        Vec.emplace_back(KV.first.ST, KV.first.FieldIndex);
+        Vec.emplace_back(KV.first, KV.second);
 
-      // Sort to make the key order-independent
+      // Sort to make the key order-independent.
       llvm::sort(Vec, [](const auto &A, const auto &B)
                  {
-      if (A.first != B.first) return A.first < B.first;       // pointer order OK intra-module
-      return A.second < B.second; });
+      if (A.first.ST != B.first.ST) return A.first.ST < B.first.ST;
+      return A.first.FieldIndex < B.first.FieldIndex; });
 
       // Serialize to a compact string key (pointer prints are stable within a run)
       KeyBuf.clear();
@@ -302,15 +304,40 @@ namespace candidate
         raw_svector_ostream OS(KeyBuf);
         for (const auto &E : Vec)
         {
-          OS << E.first << '.' << E.second << ';';
+          OS << E.first.ST << '.' << E.first.FieldIndex << ':' << E.second << ';';
         }
       }
 
-      // Sum the weights; if a group has 0.0 weight, it contributes 0.
-      Accum[KeyBuf] += G.Weight;
+      // Lookup/insert canonical key in the accumulator.
+      auto InsertRes = KeyToIndex.try_emplace(KeyBuf, Result.size());
+      if (InsertRes.second)
+      {
+        // First time we see this field multiset; create a new merged group.
+        Result.emplace_back();
+        AffinityGroup &Merged = Result.back();
+        Merged.F = nullptr;
+        Merged.LoopNodeIndex = -1;
+        Merged.Weight = G.Weight;
+        for (const auto &Entry : Vec)
+          Merged.Fields.insert({Entry.first, Entry.second});
+      }
+      else
+      {
+        // Merge into existing entry: accumulate weight and field counts.
+        AffinityGroup &Existing = Result[InsertRes.first->second];
+        Existing.Weight += G.Weight;
+        for (const auto &Entry : Vec)
+        {
+          auto It = Existing.Fields.find(Entry.first);
+          if (It == Existing.Fields.end())
+            Existing.Fields.insert({Entry.first, Entry.second});
+          else
+            It->second += Entry.second;
+        }
+      }
     }
 
-    return Accum;
+    return Result;
   }
 
   void CandidateAnalysisPass::dumpAffinityGroups(const std::vector<AffinityGroup> &Groups)
@@ -318,17 +345,29 @@ namespace candidate
     for (const auto &G : Groups)
     {
       outs() << "[candidate-analysis] group loop#" << G.LoopNodeIndex << " fields=";
-      size_t Printed = 0;
+      SmallVector<std::pair<FieldID, unsigned>, 8> Entries;
+      Entries.reserve(G.Fields.size());
       for (const auto &KV : G.Fields)
+        Entries.emplace_back(KV.first, KV.second);
+      llvm::sort(Entries, [](const auto &A, const auto &B)
+                 {
+      if (A.first.ST != B.first.ST) return A.first.ST < B.first.ST;
+      return A.first.FieldIndex < B.first.FieldIndex; });
+
+      for (size_t I = 0; I < Entries.size(); ++I)
       {
-        auto *ST = KV.first.ST;
-        unsigned Idx = KV.first.FieldIndex;
+        const FieldID &FID = Entries[I].first;
+        unsigned Count = Entries[I].second;
+        auto *ST = FID.ST;
+        unsigned Idx = FID.FieldIndex;
         if (ST && ST->hasName())
           outs() << ST->getName();
         else
           outs() << "<anon>";
         outs() << "[" << Idx << "]";
-        if (++Printed < G.Fields.size())
+        if (Count > 1)
+          outs() << "x" << Count;
+        if (I + 1 < Entries.size())
           outs() << ", ";
       }
       if (G.Weight != 0.0)
@@ -337,12 +376,35 @@ namespace candidate
     }
   }
 
-  void CandidateAnalysisPass::dumpMergedGroups(const llvm::StringMap<double> &MergedGroups)
+  void CandidateAnalysisPass::dumpMergedGroups(const std::vector<AffinityGroup> &MergedGroups)
   {
-    for (const auto &KV : MergedGroups)
+    for (const auto &G : MergedGroups)
     {
-      outs() << "[candidate-analysis] merged key={" << KV.getKey()
-             << "} total_weight=" << KV.getValue() << "\n";
+      outs() << "[candidate-analysis] merged fields={";
+      SmallVector<std::pair<FieldID, unsigned>, 8> Entries;
+      Entries.reserve(G.Fields.size());
+      for (const auto &KV : G.Fields)
+        Entries.emplace_back(KV.first, KV.second);
+      llvm::sort(Entries, [](const auto &A, const auto &B)
+                 {
+      if (A.first.ST != B.first.ST) return A.first.ST < B.first.ST;
+      return A.first.FieldIndex < B.first.FieldIndex; });
+
+      for (size_t I = 0; I < Entries.size(); ++I)
+      {
+        const FieldID &Field = Entries[I].first;
+        unsigned Count = Entries[I].second;
+        if (Field.ST && Field.ST->hasName())
+          outs() << Field.ST->getName();
+        else
+          outs() << "<anon>";
+        outs() << "[" << Field.FieldIndex << "]";
+        if (Count > 1)
+          outs() << "x" << Count;
+        if (I + 1 < Entries.size())
+          outs() << ", ";
+      }
+      outs() << "} total_weight=" << G.Weight << "\n";
     }
   }
 

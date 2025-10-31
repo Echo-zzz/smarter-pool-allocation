@@ -48,3 +48,4 @@ If you have array indices before the struct index, you’d need to walk the full
 
 ## Potential Problems to Consider
 1. The `FieldRef.h` only handles direct field access, so in terms of pointer chasing situation, the candidate analysis would not do a good job
+2. The aggregation of the weights only work within a single module, need to decide if intro-procedure consideration is needed

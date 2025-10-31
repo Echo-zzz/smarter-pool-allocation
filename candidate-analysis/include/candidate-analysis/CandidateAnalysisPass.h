@@ -97,11 +97,11 @@ namespace candidate
     static void dumpLoopFieldRefs(const llvm::Function &F, const FunctionLoopGraph &LoopGraph,
                                   const llvm::LoopInfo &LI, const llvm::DominatorTree *DT);
 
-    static llvm::StringMap<double>
+    static std::vector<AffinityGroup>
     mergeIdenticalGroupsByKey(const std::vector<AffinityGroup> &Groups);
 
     static void dumpAffinityGroups(const std::vector<AffinityGroup> &Groups);
-    static void dumpMergedGroups(const llvm::StringMap<double> &MergedGroups);
+    static void dumpMergedGroups(const std::vector<AffinityGroup> &MergedGroups);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the
