@@ -24,13 +24,6 @@ target_include_directories(CandidateAnalysis
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
-target_link_libraries(CandidateAnalysis
-    PRIVATE
-        LLVMCore
-        LLVMAnalysis
-        LLVMSupport
-)
-
 # Give users a hint if they try to build static libraries
 if (NOT LLVM_ENABLE_RTTI)
   target_compile_definitions(CandidateAnalysis PRIVATE CANDIDATE_NO_RTTI)

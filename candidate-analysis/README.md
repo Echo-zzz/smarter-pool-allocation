@@ -4,13 +4,29 @@ Out-of-tree LLVM analysis pass that implements the affinity-driven field classif
 
 ## Building
 
+### Linux
+
 ```
-cmake -S . -B build-candidate \  -DLLVM_DIR="$(llvm-config-19 --cmakedir)" \  -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-candidate \
+  -DLLVM_DIR="$(llvm-config-19 --cmakedir)" \
+  -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build-candidate --config Release
 ```
 
-This generates `libCandidateAnalysis.so` inside `build-candidate/lib/`.
+### macOS (Homebrew LLVM 19)
+
+```
+LLVM_PREFIX="$(brew --prefix llvm@19)"
+
+cmake -S . -B build-candidate \
+  -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build candidate-analysis/build-candidate --config Release
+```
+
+This generates `libCandidateAnalysis.so` (or `.dylib` on macOS) inside `build-candidate/lib/`.
 
 ## Running
 
@@ -23,12 +39,26 @@ clang -S -emit-llvm -O0 test/inputs/mixed_nested.c -o test/inputs/mixed_nested.l
 
 Use `opt` (from the same LLVM build) to load the plugin and run the pass:
 
+Linux:
+
 ```
 "$(llvm-config-19 --bindir)"/opt \
-  -load-pass-plugin /home/really146/projects/smarter-pool-allocation/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
+  -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
   -passes=candidate-analysis \
   -disable-output \
-  /home/really146/projects/smarter-pool-allocation/candidate-analysis/test/inputs/simple_nested.ll
+  "$(pwd)"/test/inputs/simple_nested.ll
+```
+
+macOS:
+
+```
+LLVM_PREFIX="$(brew --prefix llvm@19)"
+
+"${LLVM_PREFIX}/bin/opt" \
+  -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
+  -passes=candidate-analysis \
+  -disable-output \
+  "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
 ```
 
 Test scaffolding and dedicated drivers live in the `tools/` and `test/` directories.
