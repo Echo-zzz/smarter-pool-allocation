@@ -19,7 +19,7 @@ cmake --build build-candidate --config Release
 ```
 LLVM_PREFIX="$(brew --prefix llvm@19)"
 
-cmake -S . -B build-candidate \
+cmake -S ./candidate-analysis -B candidate-analysis/build-candidate \
   -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
   -DCMAKE_BUILD_TYPE=Release
 
@@ -60,6 +60,11 @@ LLVM_PREFIX="$(brew --prefix llvm@19)"
   -disable-output \
   "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
 ```
+
+The pass now emits YAML reports instead of printing directly to the terminal.
+Look for them under `candidate-analysis-report/<module-name>/` (one file for
+type-affinity graphs and one for profitability data). Override the destination
+with `-candidate-analysis-output-dir=/path/to/reports` if needed.
 
 Test scaffolding and dedicated drivers live in the `tools/` and `test/` directories.
 

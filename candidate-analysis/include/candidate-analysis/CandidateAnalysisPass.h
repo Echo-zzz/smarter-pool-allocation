@@ -2,10 +2,12 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include <vector>
+#include <system_error>
 
 namespace llvm
 {
@@ -127,11 +129,18 @@ namespace candidate
 
     static llvm::DenseMap<llvm::StructType *, TypeAffinityGraph>
     buildTypeAffinityGraphs(const std::vector<AffinityGroup> &MergedGroups);
-    static void dumpTypeAffinityGraphs(const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
-
     static llvm::DenseMap<llvm::StructType *, StructProfitability>
     analyzeStructProfitability(const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
-    static void dumpProfitabilitySummary(const llvm::DenseMap<llvm::StructType *, StructProfitability> &Profit);
+
+    static void writeYamlReports(const llvm::Module &M,
+                                 const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs,
+                                 const llvm::DenseMap<llvm::StructType *, StructProfitability> &Profit);
+    static std::error_code
+    writeTypeAffinityYaml(llvm::StringRef FilePath, llvm::StringRef ModuleId,
+                          const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs);
+    static std::error_code
+    writeProfitabilityYaml(llvm::StringRef FilePath, llvm::StringRef ModuleId,
+                           const llvm::DenseMap<llvm::StructType *, StructProfitability> &Profit);
   };
 
   /// Registration helper exposed so unit tests or custom drivers can attach the

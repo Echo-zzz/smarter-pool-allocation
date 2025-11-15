@@ -13,12 +13,17 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/YAMLTraits.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 
 #include <algorithm>
+#include <cctype>
 #include <tuple>
 #include <utility>
 
@@ -28,6 +33,43 @@ using namespace llvm;
 
 namespace candidate
 {
+
+  static cl::opt<std::string> CandidateAnalysisOutputDir(
+      "candidate-analysis-output-dir",
+      cl::desc("Directory to store candidate-analysis YAML reports"),
+      cl::init("candidate-analysis-report"));
+
+  namespace
+  {
+    std::string sanitizeForFilename(StringRef Name)
+    {
+      if (Name.empty())
+        return "module";
+      std::string Clean;
+      Clean.reserve(Name.size());
+      for (char C : Name)
+      {
+        unsigned char UC = static_cast<unsigned char>(C);
+        if (std::isalnum(UC) || C == '-' || C == '_')
+          Clean.push_back(C);
+        else
+          Clean.push_back('_');
+      }
+      return Clean;
+    }
+
+    std::string getStructLabel(const StructType *ST)
+    {
+      if (!ST)
+        return "<null>";
+      if (ST->hasName())
+        return ST->getName().str();
+      std::string Label;
+      raw_string_ostream OS(Label);
+      OS << "anon@" << ST;
+      return OS.str();
+    }
+  } // namespace
 
   PreservedAnalyses CandidateAnalysisPass::run(Module &M, ModuleAnalysisManager &MAM)
   {
@@ -99,11 +141,11 @@ namespace candidate
     }
     auto MergedGroups = mergeIdenticalGroupsByKey(AllGroups);
     // Debug-print the merged groups and the derived per-type affinity graphs.
-    dumpMergedGroups(MergedGroups);
+    // // We ingnore the merge group prints for now
+    // dumpMergedGroups(MergedGroups);
     auto TypeGraphs = buildTypeAffinityGraphs(MergedGroups);
-    dumpTypeAffinityGraphs(TypeGraphs);
     auto ProfitSummary = analyzeStructProfitability(TypeGraphs);
-    dumpProfitabilitySummary(ProfitSummary);
+    writeYamlReports(M, TypeGraphs, ProfitSummary);
     (void)MAM;
 
     return PreservedAnalyses::all();
@@ -477,83 +519,6 @@ namespace candidate
     return Graphs;
   }
 
-  void CandidateAnalysisPass::dumpTypeAffinityGraphs(const llvm::DenseMap<StructType *, TypeAffinityGraph> &Graphs)
-  {
-    if (Graphs.empty())
-    {
-      outs() << "[candidate-analysis] no type affinity graphs constructed\n";
-      return;
-    }
-
-    for (const auto &TyEntry : Graphs)
-    {
-      StructType *ST = TyEntry.first;
-      const TypeAffinityGraph &Graph = TyEntry.second;
-
-      outs() << "[candidate-analysis] type ";
-      if (ST && ST->hasName())
-        outs() << ST->getName();
-      else
-        outs() << "<anon-struct@" << ST << ">";
-      outs() << "\n";
-
-      // Dump per-field hotness in ascending field index order.
-      llvm::SmallVector<std::pair<unsigned, double>, 8> Hotness;
-      Hotness.reserve(Graph.FieldHotness.size());
-      for (const auto &KV : Graph.FieldHotness)
-        Hotness.emplace_back(KV.first, KV.second);
-      llvm::sort(Hotness, [](const auto &A, const auto &B)
-                 { return A.first < B.first; });
-
-      outs() << "    hotness: ";
-      if (Hotness.empty())
-      {
-        outs() << "(none)\n";
-      }
-      else
-      {
-        for (size_t I = 0; I < Hotness.size(); ++I)
-        {
-          outs() << Hotness[I].first << "=" << Hotness[I].second;
-          if (I + 1 < Hotness.size())
-            outs() << ", ";
-        }
-        outs() << "\n";
-      }
-
-      // Dump edge weights with canonicalised endpoints.
-      outs() << "    edges: ";
-      bool PrintedEdge = false;
-      llvm::SmallVector<std::tuple<unsigned, unsigned, double>, 16> EdgeList;
-      for (const auto &FromEntry : Graph.EdgeWeights)
-      {
-        unsigned FromIdx = FromEntry.first;
-        for (const auto &ToEntry : FromEntry.second)
-        {
-          EdgeList.emplace_back(FromIdx, ToEntry.first, ToEntry.second);
-        }
-      }
-      llvm::sort(EdgeList, [](const auto &A, const auto &B)
-                 {
-                   if (std::get<0>(A) != std::get<0>(B))
-                     return std::get<0>(A) < std::get<0>(B);
-                   if (std::get<1>(A) != std::get<1>(B))
-                     return std::get<1>(A) < std::get<1>(B);
-                   return std::get<2>(A) < std::get<2>(B);
-                 });
-
-      for (const auto &Edge : EdgeList)
-      {
-        outs() << "(" << std::get<0>(Edge) << "," << std::get<1>(Edge) << ")=" << std::get<2>(Edge);
-        outs() << " ";
-        PrintedEdge = true;
-      }
-      if (!PrintedEdge)
-        outs() << "(none)";
-      outs() << "\n";
-    }
-  }
-
   llvm::DenseMap<StructType *, CandidateAnalysisPass::StructProfitability>
   CandidateAnalysisPass::analyzeStructProfitability(const llvm::DenseMap<StructType *, TypeAffinityGraph> &Graphs)
   {
@@ -599,41 +564,186 @@ namespace candidate
     return Result;
   }
 
-  void CandidateAnalysisPass::dumpProfitabilitySummary(const llvm::DenseMap<StructType *, StructProfitability> &Profit)
-  {
-    if (Profit.empty())
+  std::error_code CandidateAnalysisPass::writeTypeAffinityYaml(
+      StringRef FilePath, StringRef ModuleId,
+      const DenseMap<StructType *, CandidateAnalysisPass::TypeAffinityGraph> &Graphs)
     {
-      outs() << "[candidate-analysis] no profitability data computed\n";
+      std::error_code EC;
+      raw_fd_ostream OS(FilePath, EC, sys::fs::OF_Text);
+      if (EC)
+        return EC;
+
+      OS << "# Candidate-analysis type affinity graphs\n";
+      OS << "module: \"" << yaml::escape(ModuleId) << "\"\n";
+      OS << "structs:\n";
+      if (Graphs.empty())
+      {
+        OS << "  []\n";
+        return std::error_code();
+      }
+
+      SmallVector<std::pair<StructType *, const CandidateAnalysisPass::TypeAffinityGraph *>, 16> Sorted;
+      for (const auto &Entry : Graphs)
+        Sorted.emplace_back(Entry.first, &Entry.second);
+      llvm::sort(Sorted, [](const auto &A, const auto &B)
+                 { return getStructLabel(A.first) < getStructLabel(B.first); });
+
+      for (const auto &Entry : Sorted)
+      {
+        StructType *ST = Entry.first;
+        const auto *Graph = Entry.second;
+        std::string Name = getStructLabel(ST);
+        OS << "  - name: \"" << yaml::escape(Name) << "\"\n";
+
+        SmallVector<std::pair<unsigned, double>, 8> Hotness;
+        Hotness.reserve(Graph->FieldHotness.size());
+        for (const auto &KV : Graph->FieldHotness)
+          Hotness.emplace_back(KV.first, KV.second);
+        llvm::sort(Hotness, [](const auto &A, const auto &B)
+                   { return A.first < B.first; });
+
+        if (Hotness.empty())
+        {
+          OS << "    field_hotness: []\n";
+        }
+        else
+        {
+          OS << "    field_hotness:\n";
+          for (const auto &H : Hotness)
+          {
+            OS << "      - index: " << H.first << "\n";
+            OS << "        hotness: " << H.second << "\n";
+          }
+        }
+
+        SmallVector<std::tuple<unsigned, unsigned, double>, 16> Edges;
+        for (const auto &FromEntry : Graph->EdgeWeights)
+        {
+          unsigned FromIdx = FromEntry.first;
+          for (const auto &ToEntry : FromEntry.second)
+          {
+            Edges.emplace_back(FromIdx, ToEntry.first, ToEntry.second);
+          }
+        }
+        llvm::sort(Edges, [](const auto &A, const auto &B)
+                   {
+                     if (std::get<0>(A) != std::get<0>(B))
+                       return std::get<0>(A) < std::get<0>(B);
+                     if (std::get<1>(A) != std::get<1>(B))
+                       return std::get<1>(A) < std::get<1>(B);
+                     return std::get<2>(A) < std::get<2>(B);
+                   });
+
+        if (Edges.empty())
+        {
+          OS << "    edges: []\n";
+        }
+        else
+        {
+          OS << "    edges:\n";
+          for (const auto &Edge : Edges)
+          {
+            OS << "      - from: " << std::get<0>(Edge) << "\n";
+            OS << "        to: " << std::get<1>(Edge) << "\n";
+            OS << "        weight: " << std::get<2>(Edge) << "\n";
+          }
+        }
+      }
+
+      return std::error_code();
+    }
+
+  std::error_code CandidateAnalysisPass::writeProfitabilityYaml(
+      StringRef FilePath, StringRef ModuleId,
+      const DenseMap<StructType *, CandidateAnalysisPass::StructProfitability> &Profit)
+    {
+      std::error_code EC;
+      raw_fd_ostream OS(FilePath, EC, sys::fs::OF_Text);
+      if (EC)
+        return EC;
+
+      OS << "# Candidate-analysis profitability summary\n";
+      OS << "module: \"" << yaml::escape(ModuleId) << "\"\n";
+      OS << "structs:\n";
+
+      if (Profit.empty())
+      {
+        OS << "  []\n";
+        return std::error_code();
+      }
+
+      SmallVector<std::pair<StructType *, const CandidateAnalysisPass::StructProfitability *>, 16> Sorted;
+      for (const auto &Entry : Profit)
+        Sorted.emplace_back(Entry.first, &Entry.second);
+      llvm::sort(Sorted, [](const auto &A, const auto &B)
+                 { return getStructLabel(A.first) < getStructLabel(B.first); });
+
+      for (const auto &Entry : Sorted)
+      {
+        StructType *ST = Entry.first;
+        const auto *Summary = Entry.second;
+        std::string Name = getStructLabel(ST);
+        OS << "  - name: \"" << yaml::escape(Name) << "\"\n";
+        OS << "    candidate: " << (Summary->IsCandidate ? "true" : "false") << "\n";
+        OS << "    max_hotness: " << Summary->MaxHotness << "\n";
+
+        SmallVector<std::pair<unsigned, CandidateAnalysisPass::FieldScore>, 8> Fields;
+        Fields.reserve(Summary->FieldScores.size());
+        for (const auto &KV : Summary->FieldScores)
+          Fields.emplace_back(KV.first, KV.second);
+        llvm::sort(Fields, [](const auto &A, const auto &B)
+                   { return A.first < B.first; });
+
+        if (Fields.empty())
+        {
+          OS << "    fields: []\n";
+          continue;
+        }
+
+        OS << "    fields:\n";
+        for (const auto &Field : Fields)
+        {
+          OS << "      - index: " << Field.first << "\n";
+          OS << "        hotness: " << Field.second.Hotness << "\n";
+          OS << "        relative_hotness_pct: " << Field.second.RelativeHotness << "\n";
+          OS << "        classification: " << (Field.second.IsCold ? "cold" : "hot") << "\n";
+        }
+      }
+
+      return std::error_code();
+    }
+
+  void CandidateAnalysisPass::writeYamlReports(const llvm::Module &M,
+                                               const llvm::DenseMap<llvm::StructType *, TypeAffinityGraph> &Graphs,
+                                               const llvm::DenseMap<llvm::StructType *, StructProfitability> &Profit)
+  {
+    SmallString<256> RootDir(CandidateAnalysisOutputDir);
+    if (RootDir.empty())
+      RootDir = "candidate-analysis-report";
+
+    StringRef ModuleId = M.getName();
+    std::string ModuleLabel = ModuleId.empty() ? "module" : ModuleId.str();
+    SmallString<256> ModuleDir(RootDir);
+    sys::path::append(ModuleDir, sanitizeForFilename(ModuleLabel));
+
+    if (std::error_code EC = sys::fs::create_directories(ModuleDir))
+    {
+      errs() << "[candidate-analysis] failed to create report directory " << ModuleDir << ": " << EC.message() << "\n";
       return;
     }
 
-    for (const auto &TyEntry : Profit)
+    SmallString<256> TypeGraphsPath(ModuleDir);
+    sys::path::append(TypeGraphsPath, "type-affinity.yaml");
+    if (std::error_code EC = writeTypeAffinityYaml(TypeGraphsPath, ModuleLabel, Graphs))
     {
-      StructType *ST = TyEntry.first;
-      const StructProfitability &Summary = TyEntry.second;
+      errs() << "[candidate-analysis] failed to write " << TypeGraphsPath << ": " << EC.message() << "\n";
+    }
 
-      outs() << "[candidate-analysis] profitability for ";
-      if (ST && ST->hasName())
-        outs() << ST->getName();
-      else
-        outs() << "<anon-struct@" << ST << ">";
-      outs() << " candidate=" << (Summary.IsCandidate ? "yes" : "no") << "\n";
-
-      // Emit per-field scores sorted by index for readability.
-      llvm::SmallVector<std::pair<unsigned, FieldScore>, 8> Entries;
-      Entries.reserve(Summary.FieldScores.size());
-      for (const auto &KV : Summary.FieldScores)
-        Entries.emplace_back(KV.first, KV.second);
-      llvm::sort(Entries, [](const auto &A, const auto &B)
-                 { return A.first < B.first; });
-
-      for (const auto &Entry : Entries)
-      {
-        outs() << "    field " << Entry.first
-               << ": hotness=" << Entry.second.Hotness
-               << " relative=" << Entry.second.RelativeHotness << "% "
-               << (Entry.second.IsCold ? "[cold]" : "[hot]") << "\n";
-      }
+    SmallString<256> ProfitPath(ModuleDir);
+    sys::path::append(ProfitPath, "profitability.yaml");
+    if (std::error_code EC = writeProfitabilityYaml(ProfitPath, ModuleLabel, Profit))
+    {
+      errs() << "[candidate-analysis] failed to write " << ProfitPath << ": " << EC.message() << "\n";
     }
   }
 

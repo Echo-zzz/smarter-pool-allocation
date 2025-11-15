@@ -13,3 +13,9 @@ compile_commands.json
 # Misc artifacts
 *.swp
 *.tmp
+
+# Analysis reports
+candidate-analysis-report/
+
+# OS cruft
+.DS_Store
