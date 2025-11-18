@@ -30,14 +30,20 @@ This generates `libCandidateAnalysis.so` (or `.dylib` on macOS) inside `build-ca
 
 ## Running
 
-Use `clang` to convert c code to llmv IR code
+The project now ships two passes inside the same plugin:
+
+- `candidate-analysis` (static loop/affinity analysis)
+- `field-access-profiler` (instrumentation that records dynamic field counts)
+
+Both rely on LLVM IR input, so start by producing bitcode:
 
 ```
 clang -S -emit-llvm -O0 test/inputs/mixed_nested.c -o test/inputs/mixed_nested.ll
-
 ```
 
-Use `opt` (from the same LLVM build) to load the plugin and run the pass:
+### Static candidate-analysis pass
+
+Run the original analysis to generate the YAML reports:
 
 Linux:
 
@@ -61,12 +67,39 @@ LLVM_PREFIX="$(brew --prefix llvm@19)"
   "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
 ```
 
-The pass now emits YAML reports instead of printing directly to the terminal.
-Look for them under `candidate-analysis-report/<module-name>/` (one file for
-type-affinity graphs and one for profitability data). Override the destination
-with `-candidate-analysis-output-dir=/path/to/reports` if needed.
+Reports appear under `candidate-analysis-report/<module-name>/` (type-affinity
+and profitability YAML). Override the destination with
+`-candidate-analysis-output-dir=/path/to/reports` if desired.
 
-Test scaffolding and dedicated drivers live in the `tools/` and `test/` directories.
+### Dynamic Field Access Profiler
+
+The profiler pass reuses the same field matching logic but instruments the IR
+with counters. After instrumentation you must finish compiling and *run* the
+program to collect counts.
+
+1. Instrument the module:
+
+   ```
+   opt \
+     -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
+     -passes=field-access-profiler \
+     -o instrumented.bc \
+     input.ll
+   ```
+
+2. Continue the normal toolchain steps. For example:
+
+   ```
+   clang instrumented.bc -o instrumented-bin
+   ./instrumented-bin            # running the binary writes the YAML
+   ```
+
+   The emitted file is `candidate-analysis-report/<module-name>/field-access-profiler.yaml`.
+
+The dynamic YAML uses the exact same struct labels and field indices as the
+static pass, making it easy to compare predictions vs. observed behavior. Use
+`-candidate-analysis-output-dir=…` to direct both passes to a different output
+root. Test scaffolding and dedicated drivers live in `tools/` and `test/`.
 
 ## Algorithm Walkthrough
 the project's main effort will be spent on an algorithm that focuses on loop analysis, do not do anything yet but understand the algorithm:

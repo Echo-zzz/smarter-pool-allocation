@@ -1,5 +1,7 @@
 set(CANDIDATE_ANALYSIS_SOURCES
     CandidateAnalysisPass.cpp
+    FieldAccessProfilerPass.cpp
+    ReportUtils.cpp
 )
 
 add_library(CandidateAnalysis MODULE ${CANDIDATE_ANALYSIS_SOURCES})

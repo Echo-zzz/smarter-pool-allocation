@@ -41,3 +41,7 @@ int process_structs(size_t len) {
     free(data);
     return total;
 }
+
+int main(void) {
+    return process_structs(1000);
+}

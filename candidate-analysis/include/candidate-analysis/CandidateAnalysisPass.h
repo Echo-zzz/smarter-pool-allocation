@@ -1,5 +1,6 @@
 #pragma once
 
+#include "candidate-analysis/FieldID.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -42,39 +43,6 @@ namespace candidate
     struct FunctionLoopGraph
     {
       std::vector<LoopNode> Nodes;
-    };
-
-    struct FieldID
-    {
-      llvm::StructType *ST = nullptr;
-      unsigned FieldIndex = ~0u;
-
-      bool operator==(const FieldID &O) const
-      {
-        return ST == O.ST && FieldIndex == O.FieldIndex;
-      }
-    };
-    struct FieldIDInfo
-    {
-      static FieldID getEmptyKey()
-      {
-        return {reinterpret_cast<llvm::StructType *>(-1), ~0u};
-      }
-
-      static FieldID getTombstoneKey()
-      {
-        return {reinterpret_cast<llvm::StructType *>(-2), ~0u};
-      }
-
-      static unsigned getHashValue(const FieldID &F)
-      {
-        return static_cast<unsigned>((reinterpret_cast<uintptr_t>(F.ST) >> 3) ^ (F.FieldIndex * 1315423911u));
-      }
-
-      static bool isEqual(const FieldID &LHS, const FieldID &RHS)
-      {
-        return LHS == RHS;
-      }
     };
 
     // A loop- (or non-loop-) scoped group of fields with a weight.
