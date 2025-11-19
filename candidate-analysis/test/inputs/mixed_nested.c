@@ -55,3 +55,7 @@ int mixed_process(size_t len) {
     free(entries);
     return total;
 }
+
+int main(void) {
+    return mixed_process(10);
+}

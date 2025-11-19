@@ -13,9 +13,20 @@ compile_commands.json
 # Misc artifacts
 *.swp
 *.tmp
+*.bc
+*.ll
+*.linked.bc
+*-instrumented
+# Olden test-suite tree (produced by run_olden_* scripts)
+llvm-test-suite/
 
 # Analysis reports
 candidate-analysis-report/
+candidate-analysis/candidate-analysis-report/
 
 # OS cruft
 .DS_Store
+
+# virtual environments
+.venv/
+env/
