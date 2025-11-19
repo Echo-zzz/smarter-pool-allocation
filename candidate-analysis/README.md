@@ -2,11 +2,20 @@
 
 Out-of-tree LLVM analysis pass that implements the affinity-driven field classification groundwork for the smarter pool allocation workflow. The project builds as a standalone CMake target and produces a pass plugin that can be loaded with `opt`.
 
-## Building
+## Prerequisites
+
+- LLVM 19 (we regularly test with the Homebrew and source builds) providing `clang`, `opt`, `llvm-config`, and the CMake package files.
+- CMake ≥ 3.20 and a C++20-capable compiler (Clang or GCC on Linux, Xcode toolchain on macOS).
+- Python 3.9+ with `pyyaml` (install via `python3 -m pip install --user pyyaml`) for the evaluation tooling.
+- The LLVM test-suite’s Olden benchmark build directories if you want to replay the full benchmark evaluation (see below).
+
+## Building the pass plugin
+
+> Build from the repository root (this folder contains `CMakeLists.txt`).
 
 ### Linux
 
-```
+```bash
 cmake -S . -B build-candidate \
   -DLLVM_DIR="$(llvm-config-19 --cmakedir)" \
   -DCMAKE_BUILD_TYPE=Release
@@ -16,7 +25,7 @@ cmake --build build-candidate --config Release
 
 ### macOS (Homebrew LLVM 19)
 
-```
+```bash
 LLVM_PREFIX="$(brew --prefix llvm@19)"
 
 cmake -S ./candidate-analysis -B candidate-analysis/build-candidate \
@@ -26,38 +35,40 @@ cmake -S ./candidate-analysis -B candidate-analysis/build-candidate \
 cmake --build candidate-analysis/build-candidate --config Release
 ```
 
-This generates `libCandidateAnalysis.so` (or `.dylib` on macOS) inside `build-candidate/lib/`.
+Both commands generate `build-candidate/lib/libCandidateAnalysis.so` (or `.dylib` on macOS). All subsequent commands refer to this shared object as the “pass plugin”.
 
-## Running
+## Producing bitcode for tests
 
-The project now ships two passes inside the same plugin:
+The tree already contains several toy programs under `test/inputs/`. Produce LLVM IR for any of them before running a pass:
 
-- `candidate-analysis` (static loop/affinity analysis)
-- `field-access-profiler` (instrumentation that records dynamic field counts)
-
-Both rely on LLVM IR input, so start by producing bitcode:
-
-```
+```bash
 clang -S -emit-llvm -O0 test/inputs/mixed_nested.c -o test/inputs/mixed_nested.ll
 ```
 
-### Static candidate-analysis pass
+Use `-candidate-analysis-output-dir=/path/to/reports` to control where pass outputs land; otherwise they go to `candidate-analysis-report/<module-name>/`.
 
-Run the original analysis to generate the YAML reports:
+## Running the passes manually
+
+The plugin ships two passes:
+
+- `candidate-analysis` (static loop/affinity analysis → type-affinity/profitability YAML)
+- `field-access-profiler` (instruments IR and logs runtime field hotness)
+
+### Static candidate-analysis pass
 
 Linux:
 
-```
+```bash
 "$(llvm-config-19 --bindir)"/opt \
   -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
   -passes=candidate-analysis \
   -disable-output \
-  "$(pwd)"/test/inputs/simple_nested.ll
+  "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
 ```
 
 macOS:
 
-```
+```bash
 LLVM_PREFIX="$(brew --prefix llvm@19)"
 
 "${LLVM_PREFIX}/bin/opt" \
@@ -67,39 +78,78 @@ LLVM_PREFIX="$(brew --prefix llvm@19)"
   "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
 ```
 
-Reports appear under `candidate-analysis-report/<module-name>/` (type-affinity
-and profitability YAML). Override the destination with
-`-candidate-analysis-output-dir=/path/to/reports` if desired.
+The pass emits `type-affinity.yaml` and `profitability.yaml` under the report directory.
 
-### Dynamic Field Access Profiler
-
-The profiler pass reuses the same field matching logic but instruments the IR
-with counters. After instrumentation you must finish compiling and *run* the
-program to collect counts.
+### Dynamic field-access profiler
 
 1. Instrument the module:
 
-   ```
+   ```bash
    opt \
      -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
      -passes=field-access-profiler \
+     -candidate-analysis-output-dir="$(pwd)/candidate-analysis-report/dynamic_test" \
      -o instrumented.bc \
-     input.ll
+     candidate-analysis/test/inputs/mixed_nested.ll
    ```
 
-2. Continue the normal toolchain steps. For example:
+2. Build and run the instrumented binary to materialize the counters:
 
-   ```
+   ```bash
    clang instrumented.bc -o instrumented-bin
-   ./instrumented-bin            # running the binary writes the YAML
+   ./instrumented-bin
    ```
 
-   The emitted file is `candidate-analysis-report/<module-name>/field-access-profiler.yaml`.
+Each run produces `field-access-profiler.yaml` for the module under the specified output directory.
 
-The dynamic YAML uses the exact same struct labels and field indices as the
-static pass, making it easy to compare predictions vs. observed behavior. Use
-`-candidate-analysis-output-dir=…` to direct both passes to a different output
-root. Test scaffolding and dedicated drivers live in `tools/` and `test/`.
+## Automating the Olden benchmark experiments
+
+The `tools/` directory contains convenience scripts that sweep every Olden benchmark bitcode file. They expect the LLVM test-suite to be configured such that `.linked.bc` files live under `$OLDEN_BUILD` (defaults to `/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden` – override via the environment).
+
+### Static pass over Olden
+
+```bash
+cd candidate-analysis
+OLDEN_BUILD=/path/to/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+OPT_BIN=/path/to/opt \
+PASS_PLUGIN=$(pwd)/build-candidate/lib/libCandidateAnalysis.so \
+OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_static \
+./tools/run_olden_static_analysis.sh
+```
+
+Each `.linked.bc` is processed once; the reports end up under `$OUTPUT_ROOT`.
+
+### Dynamic profiler over Olden
+
+```bash
+cd candidate-analysis
+OLDEN_BUILD=/path/to/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+OPT_BIN=/path/to/opt \
+CLANG_BIN=/path/to/clang \
+PASS_PLUGIN=$(pwd)/build-candidate/lib/libCandidateAnalysis.so \
+OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_dynamic \
+./tools/run_olden_field_profiler.sh
+```
+
+The script instruments every benchmark, links the executable, and runs it to emit runtime counts. Expect binaries (`*.field-prof.bin`) alongside the `.linked.bc` sources; their YAML lives under `$OUTPUT_ROOT`.
+
+## Evaluating static vs. dynamic rankings
+
+After collecting both static and dynamic reports, compare their field hotness rankings using the Spearman rho utility:
+
+```bash
+cd candidate-analysis
+python3 tools/eval_rank_correlation.py \
+  --static-dir candidate-analysis-report/olden_static \
+  --dynamic-dir candidate-analysis-report/olden_dynamic \
+  --output spearman.csv
+```
+
+Install PyYAML first (`python3 -m pip install --user pyyaml`). Optional flags `--module` and `--struct` let you focus on specific reports, and `--output` writes a CSV for downstream plotting. The script prints one line per struct plus an aggregate mean rho.
+
+## Algorithm Walkthrough
+the project's main effort will be spent on an algorithm that focuses on loop analysis, do not do anything yet but understand the algorithm:
+The pass builds a loop structure graph, walks each loop’s basic blocks, and collects the struct fields referenced in that loop into a weighted affinity group; non-loop code forms a single group weighted by the routine entry. Identical groups are merged by summing weights. From all groups, we construct a per-type affinity graph with fields as nodes and an edge when two fields co-occur in at least one group; the edge weight is the sum of the corresponding group weights. A field’s hotness is the sum of the incoming edge weights at its node. For weights, we use the paper’s static loop analysis: estimate loop/header edge frequencies and use those as group weights using LLVM loop analysis tools and make sure hot fields in callees reached from hot loops are ranked appropriately. We then apply the paper’s static threshold to classify fields (hot vs. cold) using the same published settings (split threshold is set to 7.5% under static loop analysis)
 
 ## Algorithm Walkthrough
 the project's main effort will be spent on an algorithm that focuses on loop analysis, do not do anything yet but understand the algorithm:
