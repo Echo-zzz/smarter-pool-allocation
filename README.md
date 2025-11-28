@@ -19,3 +19,22 @@
   PATH="${LLVM_PREFIX}/bin:$PATH" INPUT_FILE=../alloc-std.cpp make workflow
   ```
   Outputs stay in the submodule build dir; avoid `git add cdol-pool-alloc-testing` in the superproject unless you intend to move the submodule pointer.
+
+## Pool allocator workflow driven by candidate-analysis output (no pass changes)
+- Run candidate-analysis to produce a `profitability.yaml` for your module (see `candidate-analysis/README.md` for build/run). Note the path to that YAML under `candidate-analysis-report/.../profitability.yaml`.
+- Generate `pool_alloc_types` from that `profitability.yaml`:
+  ```bash
+  python candidate-analysis/tools/profitability_to_pool_list.py \
+    /path/to/profitability.yaml \
+    --output /tmp/pool_types.txt
+  ```
+- Run the pool workflow using that list (injects `const char* pool_alloc_types = "<list>";` before the existing pass pipeline):
+  ```bash
+  LLVM_PREFIX="$(brew --prefix llvm@19)"
+  cd cdol-pool-alloc-testing/pool-alloc/build
+  PATH="${LLVM_PREFIX}/bin:$PATH" \
+    POOL_ALLOC_TYPES_STRING="$(cat /tmp/pool_types.txt)" \
+    INPUT_FILE=../alloc-std.cpp \
+    make workflow
+  ```
+  This keeps the pool pass untouched; it still reads `pool_alloc_types`, but the list is derived from the analysis output. Outputs stay in the submodule build dir; avoid committing the submodule unless you mean to move its pointer.

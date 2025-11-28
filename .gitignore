@@ -23,6 +23,7 @@ llvm-test-suite/
 # Analysis reports
 candidate-analysis-report/
 candidate-analysis/candidate-analysis-report/
+*.csv
 
 # OS cruft
 .DS_Store

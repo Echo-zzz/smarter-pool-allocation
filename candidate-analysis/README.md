@@ -71,11 +71,14 @@ macOS:
 ```bash
 LLVM_PREFIX="$(brew --prefix llvm@19)"
 
+OUTDIR="/tmp/cand-analysis-out"
+
 "${LLVM_PREFIX}/bin/opt" \
-  -load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
-  -passes=candidate-analysis \
-  -disable-output \
-  "$(pwd)"/candidate-analysis/test/inputs/simple_nested.ll
+-load-pass-plugin "$(pwd)"/candidate-analysis/build-candidate/lib/libCandidateAnalysis.so \
+-passes=candidate-analysis \
+-candidate-analysis-output-dir="${OUTDIR}" \
+-disable-output \
+"$(pwd)"/candidate-analysis/test/inputs/simple.ll
 ```
 
 The pass emits `type-affinity.yaml` and `profitability.yaml` under the report directory.
@@ -104,7 +107,73 @@ Each run produces `field-access-profiler.yaml` for the module under the specifie
 
 ## Automating the Olden benchmark experiments
 
-The `tools/` directory contains convenience scripts that sweep every Olden benchmark bitcode file. They expect the LLVM test-suite to be configured such that `.linked.bc` files live under `$OLDEN_BUILD` (defaults to `/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden` – override via the environment).
+The `tools/` directory contains convenience scripts for static and dynamic sweeps. Here is an end-to-end run starting from a fresh llvm-test-suite checkout.
+
+1) Clone llvm-test-suite and set the LLVM prefix (Homebrew LLVM 19):
+```bash
+git clone https://github.com/llvm/llvm-test-suite.git /Users/haozhi5/Projects/llvm-test-suite
+LLVM_PREFIX="$(brew --prefix llvm@19)"
+```
+
+2) Configure + build Olden with embedded bitcode (CMake + Ninja):
+```bash
+cd /Users/haozhi5/Projects/llvm-test-suite
+cmake -S . -B build-olden -G Ninja \
+  -DTEST_SUITE_SUBDIRS="MultiSource/Benchmarks/Olden" \
+  -DTEST_SUITE_RUN_BENCHMARKS=OFF \
+  -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
+  -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
+  -DCMAKE_C_FLAGS="--save-temps=obj -O0 -g -fembed-bitcode -fno-unroll-loops -fno-vectorize -fno-discard-value-names" \
+  -DCMAKE_CXX_FLAGS="--save-temps=obj -O0 -g -fembed-bitcode -fno-unroll-loops -fno-vectorize -fno-discard-value-names" \
+  -DCMAKE_BUILD_TYPE=Debug
+ninja -C build-olden
+```
+
+3) Build the candidate-analysis plugin:
+```bash
+cd /Users/haozhi5/Projects/smarter-pool-allocation
+cmake -S ./candidate-analysis -B candidate-analysis/build-candidate \
+  -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build candidate-analysis/build-candidate --config Release
+```
+
+4) Generate `.linked.bc` for static analysis (uses clang + llvm-link):
+```bash
+cd candidate-analysis
+LLVM_PREFIX="$(brew --prefix llvm@19)" \
+OLDEN_SRC=/Users/haozhi5/Projects/llvm-test-suite/MultiSource/Benchmarks/Olden \
+OLDEN_BUILD=/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+CLANG_BIN="${LLVM_PREFIX}/bin/clang" \
+LLVM_LINK_BIN="${LLVM_PREFIX}/bin/llvm-link" \
+./tools/build_olden_bitcode.sh
+```
+
+5) Static pass over Olden:
+```bash
+cd candidate-analysis
+OLDEN_BUILD=/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+OPT_BIN="${LLVM_PREFIX}/bin/opt" \
+PASS_PLUGIN=$(pwd)/build-candidate/lib/libCandidateAnalysis.so \
+OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_static \
+./tools/run_olden_static_analysis.sh
+```
+
+6) Dynamic field-access profiler over Olden (uses TU .bc from the CMake build):
+```bash
+cd candidate-analysis
+OLDEN_BUILD=/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+OPT_BIN="${LLVM_PREFIX}/bin/opt" \
+CLANG_BIN="${LLVM_PREFIX}/bin/clang" \
+LLVM_LINK_BIN="${LLVM_PREFIX}/bin/llvm-link" \
+PASS_PLUGIN=$(pwd)/build-candidate/lib/libCandidateAnalysis.so \
+OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_dynamic \
+./tools/run_olden_dynamic_from_build.sh
+```
+
+- Static reports land under `candidate-analysis-report/olden_static`.
+- Dynamic reports land under `candidate-analysis-report/olden_dynamic`.
+- If you prefer not to embed bitcode via CMake, you can still produce `.linked.bc` with `build_olden_bitcode.sh` and use `run_olden_field_profiler.sh` (expects existing `.linked.bc` files).
 
 ### Static pass over Olden
 
@@ -132,6 +201,54 @@ OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_dynamic \
 ```
 
 The script instruments every benchmark, links the executable, and runs it to emit runtime counts. Expect binaries (`*.field-prof.bin`) alongside the `.linked.bc` sources; their YAML lives under `$OUTPUT_ROOT`.
+
+If you build Olden via CMake with `-fembed-bitcode --save-temps=obj` (for example, using Ninja and `CMAKE_C_FLAGS="--save-temps=obj -O0 -g -fembed-bitcode -fno-unroll-loops -fno-vectorize -fno-discard-value-names"`), you can run the dynamic sweep directly from the build tree:
+
+```bash
+cd candidate-analysis
+LLVM_PREFIX="$(brew --prefix llvm@19)"
+OLDEN_BUILD=/Users/haozhi5/Projects/llvm-test-suite/build-olden/MultiSource/Benchmarks/Olden \
+OPT_BIN="${LLVM_PREFIX}/bin/opt" \
+CLANG_BIN="${LLVM_PREFIX}/bin/clang" \
+LLVM_LINK_BIN="${LLVM_PREFIX}/bin/llvm-link" \
+PASS_PLUGIN=$(pwd)/build-candidate/lib/libCandidateAnalysis.so \
+OUTPUT_ROOT=$(pwd)/candidate-analysis-report/olden_dynamic \
+./tools/run_olden_dynamic_from_build.sh
+```
+
+The script will:
+- find TU `.bc` files under each `CMakeFiles/<prog>.dir`,
+- `llvm-link` them into `<prog>.linked.bc`,
+- instrument with `field-access-profiler`,
+- link and run the executable to materialize `field-access-profiler.yaml` under `$OUTPUT_ROOT`.
+
+## Evaluating static vs. dynamic rankings
+
+After collecting both static and dynamic reports, compare their field hotness rankings using the Spearman rho utility:
+
+```bash
+cd candidate-analysis
+python3 tools/eval_rank_correlation.py \
+  --static-dir candidate-analysis-report/olden_static \
+  --dynamic-dir candidate-analysis-report/olden_dynamic \
+  --output spearman.csv
+```
+
+Install PyYAML first (`python3 -m pip install --user pyyaml`). Optional flags `--module` and `--struct` let you focus on specific reports, and `--output` writes a CSV for downstream plotting. The script prints one line per struct plus an aggregate mean rho.
+
+## Evaluating cold precision
+
+Given static reports (e.g., `candidate-analysis-report/olden_static`) and dynamic reports (e.g., `candidate-analysis-report/olden_dynamic`), compute cold precision with:
+
+```bash
+cd candidate-analysis
+python3 tools/eval_cold_precision.py \
+  --static-dir candidate-analysis-report/olden_static \
+  --dynamic-dir candidate-analysis-report/olden_dynamic \
+  --output cold_precision.csv
+```
+
+Install PyYAML first (`python3 -m pip install --user pyyaml`). The script emits per-struct cold precision and writes a CSV when `--output` is provided.
 
 ## Evaluating static vs. dynamic rankings
 
