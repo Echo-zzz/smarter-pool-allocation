@@ -93,16 +93,10 @@ namespace candidate
 
       DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
 
-      // // function calls for testing purpose
-      // dumpLoopGraph(F, LoopGraph);
-      // dumpLoopFieldRefs(F, LoopGraph, LI, &DT);
-
-      // const BlockFrequencyInfo *BFI = nullptr; // (thread real BFI later)
       const BlockFrequencyInfo &BFI = FAM.getResult<BlockFrequencyAnalysis>(F);
       auto Groups = collectLoopFieldRefs(F, LoopGraph, LI, &DT, &BFI);
       AllGroups.insert(AllGroups.end(), Groups.begin(), Groups.end());
 
-      // dumpAffinityGroups(Groups);
     }
     auto MergedGroups = mergeIdenticalGroupsByKey(AllGroups);
     // Debug-print the merged groups and the derived per-type affinity graphs.
@@ -182,33 +176,33 @@ namespace candidate
         if (BodyBlocks.empty() && Header)
           enqueueBlock(const_cast<BasicBlock *>(Header));
 
-        // Reachability walk: stay inside the loop, skip subloops, and ensure the
-        // header dominates successors before enqueuing them. This gives us a
-        // robust set of body blocks without accidentally including post-loop code.
-        while (!Worklist.empty())
-        {
-          BasicBlock *BB = Worklist.pop_back_val();
-          for (BasicBlock *Succ : successors(BB))
-          {
-            if (!Succ)
-              continue;
+        // // Reachability walk: stay inside the loop, skip subloops, and ensure the
+        // // header dominates successors before enqueuing them. This gives us a
+        // // robust set of body blocks without accidentally including post-loop code.
+        // while (!Worklist.empty())
+        // {
+        //   BasicBlock *BB = Worklist.pop_back_val();
+        //   for (BasicBlock *Succ : successors(BB))
+        //   {
+        //     if (!Succ)
+        //       continue;
 
-            if (!L->contains(Succ) || LI.getLoopFor(Succ) != L)
-              continue;
+        //     if (!L->contains(Succ) || LI.getLoopFor(Succ) != L)
+        //       continue;
 
-            // Skip if this block naturally belongs to a child loop.
-            if (Loop *SuccLoop = LI.getLoopFor(Succ))
-            {
-              if (SuccLoop != L && L->contains(SuccLoop))
-                continue;
-            }
+        //     // Skip if this block naturally belongs to a child loop.
+        //     if (Loop *SuccLoop = LI.getLoopFor(Succ))
+        //     {
+        //       if (SuccLoop != L && L->contains(SuccLoop))
+        //         continue;
+        //     }
 
-            if (DT && Header && !DT->dominates(Header, Succ))
-              continue;
+        //     if (DT && Header && !DT->dominates(Header, Succ))
+        //       continue;
 
-            enqueueBlock(Succ);
-          }
-        }
+        //     enqueueBlock(Succ);
+        //   }
+        // }
 
         // Collect struct field references from every block determined to be part
         // of the loop body.
