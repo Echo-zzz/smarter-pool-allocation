@@ -10,6 +10,11 @@ Use the READMEs in each subdirectory for the authoritative instructions. This to
 - Candidate analysis: build/run, Olden scripts, evaluation → `candidate-analysis/README.md`
 - Pool allocator: architecture, CMake build, workflow target details → `cdol-pool-alloc-testing/README.md` and `cdol-pool-alloc-testing/pool-alloc/README.md`
 
+## Known limitations (pool-allocation prototype)
+- The LLVM pass (`MallocAnnotToPoolPass`) matches annotation tags directly against `pool_alloc_types` strings without resolving typedefs. If you allocate via a typedef’d pointer name (e.g., `treeptr` for `struct tree *`), you must list the typedef name in `pool_alloc_types`; listing only the underlying struct name will not match.
+- The pass only strips a trailing `" *"` when present and normalizes away leading `struct ` / `class `. Any other naming differences between annotations and `pool_alloc_types` will prevent a rewrite; there is no deeper type resolution.
+- If the global `pool_alloc_types` string is absent or lacks an initializer, the pass currently just skips rewriting and emits an error; it does not fall back to any default.
+
 ## Quick summary (pool-alloc build)
 The submodule respects `LLVM_DIR`/`Clang_DIR` (no hardcoded paths) and enables C and CXX. Build it with the same LLVM as `candidate-analysis` (Homebrew `llvm@19`):
 ```bash
