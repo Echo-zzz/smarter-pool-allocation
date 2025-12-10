@@ -4,6 +4,8 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace candidate
 {
@@ -15,10 +17,14 @@ namespace candidate
         unsigned FieldIndex = ~0u;
     };
 
-    // Works with opaque pointers: uses GEP->getSourceElementType().
-    inline FieldRef getStructFieldRef(const llvm::Value *Ptr)
+    // Returns all struct/field pairs encountered when walking a GEP’s indices
+    // from the innermost index back toward the base. Stops once a non-struct
+    // index is seen. Empty vector if the value is not a struct GEP. Works with
+    // opaque pointers: uses GEP->getSourceElementType().
+    inline llvm::SmallVector<FieldRef, 4> getStructFieldRef(const llvm::Value *Ptr)
     {
         using namespace llvm;
+        SmallVector<FieldRef, 4> Refs;
 
         // Handle inst GEPs and const-expr GEPs uniformly
         const Value *V = Ptr;
@@ -41,26 +47,68 @@ namespace candidate
         }
         const GEPOperator *GEP = dyn_cast<GEPOperator>(V);
         if (!GEP)
-            return {};
+            return Refs;
 
-        // The source element type reflects what we're indexing into (with opaque ptrs)
-        Type *ElemTy = GEP->getSourceElementType();
-        auto *ST = dyn_cast<StructType>(ElemTy);
-        if (!ST)
-            return {};
+        // Snapshot the type before each index so we can walk from the end back.
+        Type *CurrentTy = GEP->getSourceElementType();
+        SmallVector<std::pair<Type *, const Value *>, 8> Steps;
+        for (auto IdxIt = GEP->idx_begin(), E = GEP->idx_end(); IdxIt != E; ++IdxIt)
+        {
+            Steps.push_back({CurrentTy, IdxIt->get()});
 
-        // For struct GEPs, the field index is a constant in operand #2 (after the leading 0).
-        // Be robust and scan the gep indices
-        auto It = GEP->idx_begin();
-        if (It == GEP->idx_end())
-            return {};
-        ++It; // skip leading aggregate index (usually 0)
-        if (It == GEP->idx_end())
-            return {};
-        auto *CIdx = dyn_cast<ConstantInt>(It->get());
-        if (!CIdx)
-            return {};
-        return {ST, static_cast<unsigned>(CIdx->getZExtValue())};
+            // Advance the working type for the next index.
+            if (auto *CurST = dyn_cast<StructType>(CurrentTy))
+            {
+                if (auto *CI = dyn_cast<ConstantInt>(IdxIt->get()))
+                {
+                    unsigned FieldIdx = static_cast<unsigned>(CI->getZExtValue());
+                    if (FieldIdx < CurST->getNumElements())
+                        CurrentTy = CurST->getElementType(FieldIdx);
+                    else
+                        break; // out of bounds
+                }
+                else
+                {
+                    break; // non-constant struct index
+                }
+            }
+            else if (auto *ArrTy = dyn_cast<ArrayType>(CurrentTy))
+            {
+                CurrentTy = ArrTy->getElementType();
+            }
+            else if (auto *VecTy = dyn_cast<VectorType>(CurrentTy))
+            {
+                CurrentTy = VecTy->getElementType();
+            }
+            else if (isa<PointerType>(CurrentTy))
+            {
+                break; // opaque pointer: cannot descend further
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // Walk from innermost outward; record each struct field until ancestry stops.
+        for (auto It = Steps.rbegin(), E = Steps.rend(); It != E; ++It)
+        {
+            if (auto *ST = dyn_cast<StructType>(It->first))
+            {
+                if (auto *CI = dyn_cast<ConstantInt>(It->second))
+                {
+                    unsigned FieldIdx = static_cast<unsigned>(CI->getZExtValue());
+                    if (FieldIdx < ST->getNumElements())
+                        Refs.push_back({ST, FieldIdx});
+                }
+            }
+            else
+            {
+                break; // stop once we leave struct ancestry
+            }
+        }
+
+        return Refs;
     }
 
 } // namespace candidate

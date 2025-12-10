@@ -212,18 +212,21 @@ namespace candidate
           {
             if (auto *Load = dyn_cast<LoadInst>(&I))
             {
-              FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
-              bumpField(G, {Ref.ST, Ref.FieldIndex});
+              auto Refs = getStructFieldRef(Load->getPointerOperand());
+              for (const auto &Ref : Refs)
+                bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
             else if (auto *SI = dyn_cast<StoreInst>(&I))
             {
-              FieldRef Ref = getStructFieldRef(SI->getPointerOperand());
-              bumpField(G, {Ref.ST, Ref.FieldIndex});
+              auto Refs = getStructFieldRef(SI->getPointerOperand());
+              for (const auto &Ref : Refs)
+                bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
             else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
             {
-              FieldRef Ref = getStructFieldRef(GEP);
-              bumpField(G, {Ref.ST, Ref.FieldIndex});
+              auto Refs = getStructFieldRef(GEP);
+              for (const auto &Ref : Refs)
+                bumpField(G, {Ref.ST, Ref.FieldIndex});
             }
           }
         }
@@ -262,18 +265,21 @@ namespace candidate
       {
         if (const auto *Load = dyn_cast<LoadInst>(&I))
         {
-          FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
-          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+          auto Refs = getStructFieldRef(Load->getPointerOperand());
+          for (const auto &Ref : Refs)
+            bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
         }
         else if (const auto *SI = dyn_cast<StoreInst>(&I))
         {
-          FieldRef Ref = getStructFieldRef(SI->getPointerOperand());
-          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+          auto Refs = getStructFieldRef(SI->getPointerOperand());
+          for (const auto &Ref : Refs)
+            bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
         }
         else if (const auto *GEP = dyn_cast<GetElementPtrInst>(&I))
         {
-          FieldRef Ref = getStructFieldRef(GEP);
-          bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
+          auto Refs = getStructFieldRef(GEP);
+          for (const auto &Ref : Refs)
+            bumpField(NonLoopGroup, {Ref.ST, Ref.FieldIndex});
         }
       }
     }

@@ -280,18 +280,21 @@ namespace candidate
         {
           if (auto *Load = dyn_cast<LoadInst>(&I))
           {
-            FieldRef Ref = getStructFieldRef(Load->getPointerOperand());
-            track(I, Ref);
+            auto Refs = getStructFieldRef(Load->getPointerOperand());
+            for (const auto &Ref : Refs)
+              track(I, Ref);
           }
           else if (auto *Store = dyn_cast<StoreInst>(&I))
           {
-            FieldRef Ref = getStructFieldRef(Store->getPointerOperand());
-            track(I, Ref);
+            auto Refs = getStructFieldRef(Store->getPointerOperand());
+            for (const auto &Ref : Refs)
+              track(I, Ref);
           }
           else if (auto *GEP = dyn_cast<GetElementPtrInst>(&I))
           {
-            FieldRef Ref = getStructFieldRef(GEP);
-            track(I, Ref);
+            auto Refs = getStructFieldRef(GEP);
+            for (const auto &Ref : Refs)
+              track(I, Ref);
           }
         }
       }
